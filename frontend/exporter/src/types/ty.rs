@@ -1264,23 +1264,36 @@ sinto_todo!(rustc_middle::ty, AdtFlags);
 /// Reflects [`ty::ReprOptions`]
 #[derive_group(Serializers)]
 #[derive(AdtInto, Clone, Debug, JsonSchema)]
-#[args(<'tcx, S: UnderOwnerState<'tcx>>, from: rustc_abi::ReprOptions, state: S as s)]
+#[args(<'tcx, S: UnderOwnerState<'tcx>>, from: rustc_abi::ReprOptions, state: S as _s)]
 pub struct ReprOptions {
-    pub int: Option<IntegerType>,
-    #[value({
-        use crate::rustc_middle::ty::util::IntTypeExt;
-        self.discr_type().to_ty(s.base().tcx).sinto(s)
-    })]
-    pub typ: Ty,
+    /// Whether an explicit integer representation was specified.
+    #[value(self.int.is_some())]
+    pub int_specified: bool,
     pub align: Option<Align>,
     pub pack: Option<Align>,
+    #[value(ReprFlags { is_c: self.c(), is_transparent: self.transparent(), is_simd: self.simd() })]
     pub flags: ReprFlags,
-    pub field_shuffle_seed: u64,
 }
 
-sinto_todo!(rustc_abi, IntegerType);
-sinto_todo!(rustc_abi, ReprFlags);
-sinto_todo!(rustc_abi, Align);
+/// The representation flags without the ones irrelevant outside of rustc.
+#[derive_group(Serializers)]
+#[derive(Clone, Debug, JsonSchema)]
+pub struct ReprFlags {
+    pub is_c: bool,
+    pub is_transparent: bool,
+    pub is_simd: bool,
+}
+
+/// Reflects [`ty::Align`], but directly stores the number of bytes as a u64.
+#[derive_group(Serializers)]
+#[derive(AdtInto, Clone, Debug, JsonSchema)]
+#[args(<'tcx, S: UnderOwnerState<'tcx>>, from: rustc_abi::Align, state: S as _s)]
+pub struct Align {
+    #[value({
+        self.bytes()
+    })]
+    pub bytes: u64,
+}
 
 /// Reflects [`ty::adjustment::PointerCoercion`]
 #[derive_group(Serializers)]
