@@ -6,7 +6,11 @@ use crate::sinto_todo;
 use std::sync::Arc;
 
 #[cfg(feature = "rustc")]
+use rustc_hir::def::DefKind as RDefKind;
+#[cfg(feature = "rustc")]
 use rustc_middle::ty;
+#[cfg(feature = "rustc")]
+use rustc_span::def_id::DefId as RDefId;
 
 /// Generic container for decorating items with a type, a span,
 /// attributes and other meta-data.
@@ -502,6 +506,11 @@ impl ItemRef {
         }
 
         let tcx = s.base().tcx;
+        if matches!(tcx.def_kind(def_id), RDefKind::Closure) {
+            // Rustc gives generic extra generic for inference that we don't care about.
+            generics = generics.truncate_to(tcx, tcx.generics_of(tcx.typeck_root_def_id(def_id)));
+        }
+
         // If this is an associated item, resolve the trait reference.
         let mut trait_info = self_clause_for_item(s, def_id, generics);
 
