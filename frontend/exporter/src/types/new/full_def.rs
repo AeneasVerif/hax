@@ -152,15 +152,8 @@ where
         .filter(|source_span| source_span.ctxt().is_root())
         .and_then(|source_span| tcx.sess.source_map().span_to_snippet(source_span).ok());
     let this = if can_have_generics(tcx, rust_def_id) {
-        let args_or_default = args.unwrap_or_else(|| {
-            if matches!(def_id.kind, DefKind::Closure) {
-                // For closures we use the args of their parent. Otherwise closure items get some
-                // special generics used for inference that we don't care about.
-                ty::GenericArgs::identity_for_item(tcx, tcx.typeck_root_def_id(rust_def_id))
-            } else {
-                ty::GenericArgs::identity_for_item(tcx, rust_def_id)
-            }
-        });
+        let args_or_default =
+            args.unwrap_or_else(|| ty::GenericArgs::identity_for_item(tcx, rust_def_id));
         let item = translate_item_ref(s, rust_def_id, args_or_default);
         // Tricky: hax's DefId has more info (could be a promoted const), we must be careful to use
         // the input DefId instead of the one derived from `rust_def_id`.
@@ -390,10 +383,11 @@ pub enum FullDefKind<Body> {
         body: Option<Body>,
     },
     /// A closure, coroutine, or coroutine-closure.
-    ///
-    /// Note: the (early-bound) generics of a closure are the same as those of the item in which it
-    /// is defined.
     Closure {
+        /// This param env is empty because the (early-bound) generics of a closure are the same as
+        /// those of the item in which it is defined. We hide the special weird generics that rustc
+        /// uses internally for inference on closures.
+        param_env: ParamEnv,
         args: ClosureArgs,
         is_const: bool,
         /// Info required to construct a virtual `FnOnce` impl for this closure.
@@ -822,6 +816,7 @@ where
             let fn_trait = tcx.lang_items().fn_trait().unwrap();
             let destruct_trait = tcx.lang_items().destruct_trait().unwrap();
             FullDefKind::Closure {
+                param_env: get_param_env(s, args),
                 is_const: tcx.constness(def_id) == rustc_hir::Constness::Const,
                 args: ClosureArgs::sfrom(s, def_id, closure),
                 once_shim: get_closure_once_shim(s, closure_ty),
@@ -1015,6 +1010,7 @@ impl<Body> FullDef<Body> {
             | AssocTy { param_env, .. }
             | Fn { param_env, .. }
             | AssocFn { param_env, .. }
+            | Closure { param_env, .. }
             | Const { param_env, .. }
             | AssocConst { param_env, .. }
             | Static { param_env, .. }
@@ -1252,7 +1248,12 @@ fn get_param_env<'tcx, S: UnderOwnerState<'tcx>>(
 ) -> ParamEnv {
     let tcx = s.base().tcx;
     let def_id = s.owner_id();
-    let generics = tcx.generics_of(def_id).sinto(s);
+    // Rustc adds generic params to closures for impl details purposes; we hide these.
+    let is_closure = matches!(tcx.def_kind(def_id), RDefKind::Closure);
+    let mut generics = tcx.generics_of(def_id).sinto(s);
+    if is_closure {
+        generics.params = Default::default();
+    }
 
     let parent = generics.parent.as_ref().map(|parent| {
         let parent = parent.underlying_rust_def_id();
@@ -1263,7 +1264,11 @@ fn get_param_env<'tcx, S: UnderOwnerState<'tcx>>(
     match args {
         None => ParamEnv {
             generics,
-            predicates: required_predicates(tcx, def_id, s.base().options.bounds_options).sinto(s),
+            predicates: if is_closure {
+                GenericPredicates::default()
+            } else {
+                required_predicates(tcx, def_id, s.base().options.bounds_options).sinto(s)
+            },
             parent,
         },
         // An instantiated item is monomorphic.
