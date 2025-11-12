@@ -496,11 +496,24 @@ impl ItemRef {
     #[cfg(feature = "rustc")]
     pub fn translate<'tcx, S: UnderOwnerState<'tcx>>(
         s: &S,
+        def_id: RDefId,
+        generics: ty::GenericArgsRef<'tcx>,
+    ) -> ItemRef {
+        Self::translate_maybe_dont_resolve(s, true, def_id, generics)
+    }
+
+    /// Like `translate` but optionally don't resolve trait refs. This is used when the `def_id` is
+    /// not the real one (for promoted consts), as this otherwise gives incorrect results.
+    #[cfg(feature = "rustc")]
+    pub fn translate_maybe_dont_resolve<'tcx, S: UnderOwnerState<'tcx>>(
+        s: &S,
+        // Whether to resolve trait references.
+        resolve_trait_ref: bool,
         mut def_id: RDefId,
         mut generics: ty::GenericArgsRef<'tcx>,
     ) -> ItemRef {
         use rustc_infer::infer::canonical::ir::TypeVisitableExt;
-        let key = (def_id, generics);
+        let key = (def_id, generics, resolve_trait_ref);
         if let Some(item) = s.with_cache(|cache| cache.item_refs.get(&key).cloned()) {
             return item;
         }
@@ -512,7 +525,11 @@ impl ItemRef {
         }
 
         // If this is an associated item, resolve the trait reference.
-        let mut trait_info = self_clause_for_item(s, def_id, generics);
+        let mut trait_info = if resolve_trait_ref {
+            self_clause_for_item(s, def_id, generics)
+        } else {
+            None
+        };
 
         // If the reference is a known trait impl and the impl implements the target item, we can
         // point directly to the implemented item.
