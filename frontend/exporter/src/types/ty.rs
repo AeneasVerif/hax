@@ -3,7 +3,6 @@
 use crate::prelude::*;
 use crate::sinto_as_usize;
 use crate::sinto_todo;
-use std::sync::Arc;
 
 #[cfg(feature = "rustc")]
 use rustc_hir::def::DefKind as RDefKind;
@@ -477,17 +476,14 @@ pub struct ItemRefContents {
 #[derive(Clone, Debug, JsonSchema, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct ItemRef {
-    pub(crate) contents: id_table::Node<ItemRefContents>,
+    pub(crate) contents: id_table::hash_consing::HashConsed<ItemRefContents>,
 }
 
 impl ItemRefContents {
     #[cfg(feature = "rustc")]
-    fn intern<'tcx, S: BaseState<'tcx>>(self, s: &S) -> ItemRef {
-        s.with_global_cache(|cache| {
-            let table_session = &mut cache.id_table_session;
-            let contents = id_table::Node::new(self, table_session);
-            ItemRef { contents }
-        })
+    fn intern<'tcx, S: BaseState<'tcx>>(self, _s: &S) -> ItemRef {
+        let contents = id_table::hash_consing::HashConsed::new(self);
+        ItemRef { contents }
     }
 }
 
@@ -614,7 +610,7 @@ impl ItemRef {
             cache.item_refs.insert(key, item.clone());
         });
         s.with_global_cache(|cache| {
-            cache.reverse_item_refs_map.insert(item.id(), generics);
+            cache.reverse_item_refs_map.insert(item.clone(), generics);
         });
         item
     }
@@ -634,7 +630,7 @@ impl ItemRef {
         s.with_global_cache(|cache| {
             cache
                 .reverse_item_refs_map
-                .insert(item.id(), ty::GenericArgsRef::default());
+                .insert(item.clone(), ty::GenericArgsRef::default());
         });
         item
     }
@@ -672,16 +668,11 @@ impl ItemRef {
         &self.contents
     }
 
-    /// Get a unique id identitying this `ItemRef`.
-    pub fn id(&self) -> Self {
-        self.clone()
-    }
-
     /// Recover the original rustc args that generated this `ItemRef`. Will panic if the `ItemRef`
     /// was built by hand instead of using `translate_item_ref`.
     #[cfg(feature = "rustc")]
     pub fn rustc_args<'tcx, S: BaseState<'tcx>>(&self, s: &S) -> ty::GenericArgsRef<'tcx> {
-        s.with_global_cache(|cache| *cache.reverse_item_refs_map.get(&self.id()).unwrap())
+        s.with_global_cache(|cache| *cache.reverse_item_refs_map.get(self).unwrap())
     }
 
     /// Mutate the `DefId`, keeping the same generic args.
@@ -696,7 +687,7 @@ impl ItemRef {
         f(&mut contents.def_id);
         let new = contents.intern(s);
         s.with_global_cache(|cache| {
-            cache.reverse_item_refs_map.insert(new.id(), args);
+            cache.reverse_item_refs_map.insert(new.clone(), args);
         });
         new
     }
@@ -1032,10 +1023,6 @@ impl Ty {
     pub fn new<'tcx, S: BaseState<'tcx>>(_s: &S, kind: TyKind) -> Self {
         let kind = id_table::hash_consing::HashConsed::new(kind);
         Ty { kind }
-    }
-
-    pub fn inner(&self) -> &Arc<TyKind> {
-        self.kind.as_arc()
     }
 
     pub fn kind(&self) -> &TyKind {

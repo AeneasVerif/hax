@@ -575,7 +575,7 @@ pub mod hash_by_addr {
     pub struct HashByAddr<T>(pub T);
 
     impl<T: Deref> HashByAddr<T> {
-        fn addr(&self) -> *const T::Target {
+        pub fn addr(&self) -> *const T::Target {
             self.0.deref()
         }
     }
