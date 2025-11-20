@@ -1,13 +1,13 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.05";
     flake-utils.url = "github:numtide/flake-utils";
     crane = { url = "github:ipetkov/crane"; };
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    fstar.url = "github:FStarLang/FStar/v2025.03.25";
+    fstar.url = "github:FStarLang/FStar/v2025.10.06";
     hacl-star = {
       url = "github:hacl-star/hacl-star";
       flake = false;
@@ -153,7 +153,16 @@
           serve-rustc-docs = {
             type = "app";
             program = "${pkgs.writeScript "serve-rustc-docs" ''
+              #!${pkgs.bash}/bin/bash
               cd ${rustc-docs}/share/doc/rust/html/rustc
+              ${pkgs.python3}/bin/python -m http.server "$@"
+            ''}";
+          };
+          serve-docs = {
+            type = "app";
+            program = "${pkgs.writeScript "serve-docs" ''
+              #!${pkgs.bash}/bin/bash
+              cd ${packages.docs}
               ${pkgs.python3}/bin/python -m http.server "$@"
             ''}";
           };

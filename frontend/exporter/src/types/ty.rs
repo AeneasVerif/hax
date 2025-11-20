@@ -499,13 +499,25 @@ impl ItemRef {
         def_id: RDefId,
         generics: ty::GenericArgsRef<'tcx>,
     ) -> ItemRef {
-        Self::translate_maybe_dont_resolve(s, true, def_id, generics)
+        Self::translate_maybe_resolve_impl(
+            s,
+            s.base().options.item_ref_use_concrete_impl,
+            def_id,
+            generics,
+        )
     }
 
-    /// Like `translate` but optionally don't resolve trait refs. This is used when the `def_id` is
-    /// not the real one (for promoted consts), as this otherwise gives incorrect results.
+    /// Makes a `ItemRef` from a `def_id` and generics.
+    ///
+    /// If `resolve_trait_ref == true` and `(def_id, generics)` points to a trait item that
+    /// can be resolved to a specific `impl`, `translate` rewrites `def_id` to the
+    /// concrete associated item from that `impl` and re-bases the generics.
+    ///
+    /// For instance, [`<u32 as From<u8>>::from`] produces a [`ItemRef`] with a
+    /// [`DefId`] looking like `core::convert::num::Impl#42::from` when
+    /// `resolve_impl` is `true`, `core::convert::From::from` otherwise.
     #[cfg(feature = "rustc")]
-    pub fn translate_maybe_dont_resolve<'tcx, S: UnderOwnerState<'tcx>>(
+    pub fn translate_maybe_resolve_impl<'tcx, S: UnderOwnerState<'tcx>>(
         s: &S,
         // Whether to resolve trait references.
         resolve_trait_ref: bool,

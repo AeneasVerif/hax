@@ -265,7 +265,7 @@ fn translate_mir_const<'tcx, S: UnderOwnerState<'tcx>>(
             match ucv.promoted {
                 Some(promoted) => {
                     // The def_id is not the real one: we don't want trait resolution to happen.
-                    let item = ItemRef::translate_maybe_dont_resolve(s, false, ucv.def, ucv.args);
+                    let item = ItemRef::translate_maybe_resolve_impl(s, false, ucv.def, ucv.args);
                     assert!(item.in_trait.is_none());
                     let item = item.mutate_def_id(s, |def_id| {
                         // Construct a def_id for the promoted constant.
