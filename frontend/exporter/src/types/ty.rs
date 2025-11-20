@@ -1018,25 +1018,22 @@ impl<'tcx, S: UnderOwnerState<'tcx>> SInto<S, Box<Ty>> for ty::Ty<'tcx> {
 #[derive(Clone, Debug, JsonSchema, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct Ty {
-    pub(crate) kind: id_table::Node<TyKind>,
+    pub(crate) kind: id_table::hash_consing::HashConsed<TyKind>,
 }
 
 impl Ty {
     #[cfg(feature = "rustc")]
-    pub fn new<'tcx, S: BaseState<'tcx>>(s: &S, kind: TyKind) -> Self {
-        s.with_global_cache(|cache| {
-            let table_session = &mut cache.id_table_session;
-            let kind = id_table::Node::new(kind, table_session);
-            Ty { kind }
-        })
+    pub fn new<'tcx, S: BaseState<'tcx>>(_s: &S, kind: TyKind) -> Self {
+        let kind = id_table::hash_consing::HashConsed::new(kind);
+        Ty { kind }
     }
 
     pub fn inner(&self) -> &Arc<TyKind> {
-        self.kind.inner()
+        self.kind.as_arc()
     }
 
     pub fn kind(&self) -> &TyKind {
-        self.inner().as_ref()
+        self.kind.inner()
     }
 }
 
