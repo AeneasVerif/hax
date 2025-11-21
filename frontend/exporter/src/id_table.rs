@@ -18,7 +18,7 @@
 /// global state.
 use crate::prelude::*;
 use std::{
-    hash::{Hash, Hasher},
+    hash::Hash,
     sync::{Arc, LazyLock, Mutex, MutexGuard, atomic::Ordering},
 };
 
@@ -33,7 +33,6 @@ pub struct Id {
 /// A session providing fresh IDs for ID table.
 #[derive(Default, Debug)]
 pub struct Session {
-    next_id: Id,
     table: Table,
 }
 
@@ -51,84 +50,6 @@ pub enum Value {
     ItemRef(Arc<ItemRefContents>),
 }
 
-impl SupportedType<Value> for TyKind {
-    fn to_types(value: Arc<Self>) -> Value {
-        Value::Ty(value)
-    }
-    fn from_types(t: &Value) -> Option<Arc<Self>> {
-        match t {
-            Value::Ty(value) => Some(value.clone()),
-            _ => None,
-        }
-    }
-}
-
-impl SupportedType<Value> for DefIdContents {
-    fn to_types(value: Arc<Self>) -> Value {
-        Value::DefId(value)
-    }
-    fn from_types(t: &Value) -> Option<Arc<Self>> {
-        match t {
-            Value::DefId(value) => Some(value.clone()),
-            _ => None,
-        }
-    }
-}
-
-impl SupportedType<Value> for ItemRefContents {
-    fn to_types(value: Arc<Self>) -> Value {
-        Value::ItemRef(value)
-    }
-    fn from_types(t: &Value) -> Option<Arc<Self>> {
-        match t {
-            Value::ItemRef(value) => Some(value.clone()),
-            _ => None,
-        }
-    }
-}
-
-/// A node is a bundle of an ID with a value.
-#[derive(Deserialize, Serialize, Debug, JsonSchema, PartialOrd, Ord)]
-#[serde(into = "serde_repr::NodeRepr<T>")]
-#[serde(try_from = "serde_repr::NodeRepr<T>")]
-pub struct Node<T: 'static + SupportedType<Value>> {
-    id: Id,
-    value: Arc<T>,
-}
-
-impl<T: SupportedType<Value>> std::ops::Deref for Node<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        self.value.as_ref()
-    }
-}
-
-/// Hax relies on hashes being deterministic for predicates
-/// ids. Identifiers are not deterministic: we implement hash for
-/// `Node` manually, discarding the field `id`.
-impl<T: SupportedType<Value> + Hash> Hash for Node<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.value.as_ref().hash(state);
-    }
-}
-impl<T: SupportedType<Value> + Eq> Eq for Node<T> {}
-impl<T: SupportedType<Value> + PartialEq> PartialEq for Node<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.value == other.value
-    }
-}
-
-/// Manual implementation of `Clone` that doesn't require a `Clone`
-/// bound on `T`.
-impl<T: SupportedType<Value>> Clone for Node<T> {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id.clone(),
-            value: self.value.clone(),
-        }
-    }
-}
-
 /// A table is a map from IDs to `Value`s. When serialized, we
 /// represent a table as a *sorted* vector. Indeed, the values stored
 /// in the table might reference each other, without cycle, so the
@@ -144,7 +65,6 @@ mod heterogeneous_map {
 
     use std::collections::HashMap;
     use std::hash::Hash;
-    use std::sync::Arc;
     #[derive(Clone, Debug)]
     /// An heterogenous map is a map from `Key` to `Value`. It provide
     /// the methods `insert` and `get` for any type `T` that
@@ -158,12 +78,6 @@ mod heterogeneous_map {
     }
 
     impl<Key: Hash + Eq + PartialEq, Value> HeterogeneousMap<Key, Value> {
-        pub(super) fn insert<T>(&mut self, key: Key, value: Arc<T>)
-        where
-            T: SupportedType<Value>,
-        {
-            self.insert_raw_value(key, T::to_types(value));
-        }
         pub(super) fn insert_raw_value(&mut self, key: Key, value: Value) {
             self.0.insert(key, value);
         }
@@ -173,47 +87,9 @@ mod heterogeneous_map {
         pub(super) fn into_iter(self) -> impl Iterator<Item = (Key, Value)> {
             self.0.into_iter()
         }
-        pub(super) fn get<T>(&self, key: &Key) -> Option<Option<Arc<T>>>
-        where
-            T: SupportedType<Value>,
-        {
-            self.0.get(key).map(T::from_types)
-        }
-    }
-
-    /// A type that can be mapped to `Value` and optionally
-    /// reconstructed back.
-    pub trait SupportedType<Value>: std::fmt::Debug {
-        fn to_types(value: Arc<Self>) -> Value;
-        fn from_types(t: &Value) -> Option<Arc<Self>>;
     }
 }
 use heterogeneous_map::*;
-
-impl Session {
-    fn fresh_id(&mut self) -> Id {
-        let id = self.next_id.id;
-        self.next_id.id += 1;
-        Id { id }
-    }
-}
-
-impl<T: Sync + Send + 'static + SupportedType<Value>> Node<T> {
-    pub fn new(value: T, session: &mut Session) -> Self {
-        let id = session.fresh_id();
-        let value = Arc::new(value);
-        session.table.0.insert(id.clone(), value.clone());
-        Self { id, value }
-    }
-
-    pub fn inner(&self) -> &Arc<T> {
-        &self.value
-    }
-
-    pub fn id(&self) -> Id {
-        self.id
-    }
-}
 
 /// Wrapper for a type `T` that creates a bundle containing both a ID
 /// table and a value `T`. That value may contains `Node` values
@@ -295,60 +171,12 @@ impl<'de, T: Deserialize<'de>> serde::Deserialize<'de> for WithTable<T> {
 mod serde_repr {
     use super::*;
 
-    #[derive(Serialize, Deserialize, JsonSchema, Debug)]
-    pub(super) struct NodeRepr<T> {
-        id: Id,
-        value: Option<Arc<T>>,
-    }
-
     #[derive(Serialize)]
     pub(super) struct Pair(Id, Value);
     pub(super) type SortedIdValuePairs = Vec<Pair>;
 
     #[derive(Serialize, Deserialize)]
     pub(super) struct WithTableRepr<T>(pub(super) Table, pub(super) T);
-
-    impl<T: SupportedType<Value>> Into<NodeRepr<T>> for Node<T> {
-        fn into(self) -> NodeRepr<T> {
-            let value = if serialize_use_id() {
-                None
-            } else {
-                Some(self.value.clone())
-            };
-            let id = self.id;
-            NodeRepr { value, id }
-        }
-    }
-
-    impl<T: 'static + SupportedType<Value>> TryFrom<NodeRepr<T>> for Node<T> {
-        type Error = serde::de::value::Error;
-
-        fn try_from(cached: NodeRepr<T>) -> Result<Self, Self::Error> {
-            use serde::de::Error;
-            let table = DESERIALIZATION_STATE.lock().unwrap();
-            let id = cached.id;
-            let kind = if let Some(kind) = cached.value {
-                kind
-            } else {
-                table
-                    .0
-                    .get(&id)
-                    .ok_or_else(|| {
-                        Self::Error::custom(&format!(
-                            "Stateful deserialization failed for id {:?}: not found in cache",
-                            id
-                        ))
-                    })?
-                    .ok_or_else(|| {
-                        Self::Error::custom(&format!(
-                            "Stateful deserialization failed for id {:?}: wrong type",
-                            id
-                        ))
-                    })?
-            };
-            Ok(Self { value: kind, id })
-        }
-    }
 
     impl<'de> serde::Deserialize<'de> for Pair {
         fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -378,6 +206,230 @@ mod serde_repr {
             Self(HeterogeneousMap::from_iter(
                 t.into_iter().map(|Pair(x, y)| (x, y)),
             ))
+        }
+    }
+}
+
+pub mod type_map {
+    use std::{
+        any::{Any, TypeId},
+        collections::HashMap,
+        marker::PhantomData,
+    };
+
+    pub trait Mappable = Any + Send + Sync;
+
+    pub trait Mapper {
+        type Value<T: Mappable>: Mappable;
+    }
+
+    /// A map that maps types to values in a generic manner: we store for each type `T` a value of
+    /// type `M::Value<T>`.
+    pub struct TypeMap<M> {
+        data: HashMap<TypeId, Box<dyn Mappable>>,
+        phantom: PhantomData<M>,
+    }
+
+    impl<M: Mapper> TypeMap<M> {
+        pub fn get<T: Mappable>(&self) -> Option<&M::Value<T>> {
+            self.data
+                .get(&TypeId::of::<T>())
+                // We must be careful to not accidentally cast the box itself as `dyn Any`.
+                .map(|val: &Box<dyn Mappable>| &**val)
+                .and_then(|val: &dyn Mappable| (val as &dyn Any).downcast_ref())
+        }
+
+        pub fn get_mut<T: Mappable>(&mut self) -> Option<&mut M::Value<T>> {
+            self.data
+                .get_mut(&TypeId::of::<T>())
+                // We must be careful to not accidentally cast the box itself as `dyn Any`.
+                .map(|val: &mut Box<dyn Mappable>| &mut **val)
+                .and_then(|val: &mut dyn Mappable| (val as &mut dyn Any).downcast_mut())
+        }
+
+        pub fn insert<T: Mappable>(&mut self, val: M::Value<T>) -> Option<Box<M::Value<T>>> {
+            self.data
+                .insert(TypeId::of::<T>(), Box::new(val))
+                .and_then(|val: Box<dyn Mappable>| (val as Box<dyn Any>).downcast().ok())
+        }
+    }
+
+    impl<M> Default for TypeMap<M> {
+        fn default() -> Self {
+            Self {
+                data: Default::default(),
+                phantom: Default::default(),
+            }
+        }
+    }
+}
+
+pub mod hash_consing {
+    use super::hash_by_addr::HashByAddr;
+    use super::type_map::{Mappable, Mapper, TypeMap};
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashSet;
+    use std::hash::Hash;
+    use std::ops::Deref;
+    use std::sync::{Arc, LazyLock, RwLock};
+
+    /// Hash-consed data structure: a reference-counted wrapper that guarantees that two equal
+    /// value will be stored at the same address. This makes it possible to use the pointer address
+    /// as a hash value.
+    #[derive(PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, JsonSchema)]
+    pub struct HashConsed<T>(HashByAddr<Arc<T>>);
+
+    impl<T> HashConsed<T> {
+        pub fn inner(&self) -> &T {
+            self.0.0.as_ref()
+        }
+    }
+
+    impl<T> HashConsed<T>
+    where
+        T: Hash + PartialEq + Eq + Mappable,
+    {
+        pub fn new(inner: T) -> Self {
+            Self::intern(inner)
+        }
+
+        /// Clones if needed to get mutable access to the inner value.
+        pub fn with_inner_mut<R>(&mut self, f: impl FnOnce(&mut T) -> R) -> R
+        where
+            T: Clone,
+        {
+            // The value is behind a shared `Arc`, we clone it in order to mutate it.
+            let mut value = self.inner().clone();
+            let ret = f(&mut value);
+            // Re-intern the new value.
+            *self = Self::intern(value);
+            ret
+        }
+
+        /// Deduplicate the values by hashing them. This deduplication is crucial for the hashing
+        /// function to be correct. This is the only function allowed to create `Self` values.
+        fn intern(inner: T) -> Self {
+            struct InternMapper;
+            impl Mapper for InternMapper {
+                type Value<T: Mappable> = HashSet<Arc<T>>;
+            }
+            // This is a static mutable `HashSet<Arc<T>>` that records for each `T` value a unique
+            // `Arc<T>` that contains the same value. Values inside the set are hashed/compared
+            // as is normal for `T`.
+            // Once we've gotten an `Arc` out of the set however, we're sure that "T-equality"
+            // implies address-equality, hence the `HashByAddr` wrapper preserves correct equality
+            // and hashing behavior.
+            static INTERNED: LazyLock<RwLock<TypeMap<InternMapper>>> =
+                LazyLock::new(|| Default::default());
+
+            if INTERNED.read().unwrap().get::<T>().is_none() {
+                INTERNED.write().unwrap().insert::<T>(HashSet::default());
+            }
+            let read_guard = INTERNED.read().unwrap();
+            let arc = if let Some(arc) = (*read_guard).get::<T>().unwrap().get(&inner) {
+                arc.clone()
+            } else {
+                drop(read_guard);
+                let arc: Arc<T> = Arc::new(inner);
+                INTERNED
+                    .write()
+                    .unwrap()
+                    .get_mut::<T>()
+                    .unwrap()
+                    .insert(arc.clone());
+                arc
+            };
+            Self(HashByAddr(arc))
+        }
+    }
+
+    impl<T> Clone for HashConsed<T> {
+        fn clone(&self) -> Self {
+            Self(self.0.clone())
+        }
+    }
+
+    impl<T> Deref for HashConsed<T> {
+        type Target = T;
+        fn deref(&self) -> &Self::Target {
+            self.inner()
+        }
+    }
+
+    impl<T: std::fmt::Debug> std::fmt::Debug for HashConsed<T> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            // Hide the `HashByAddr` wrapper.
+            f.debug_tuple("HashConsed").field(self.inner()).finish()
+        }
+    }
+
+    /// Manual impl to make sure we re-establish sharing!
+    impl<'de, T> Deserialize<'de> for HashConsed<T>
+    where
+        T: Hash + PartialEq + Eq + Clone + Mappable,
+        T: Deserialize<'de>,
+    {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let x: T = T::deserialize(deserializer)?;
+            Ok(Self::new(x))
+        }
+    }
+
+    #[test]
+    fn test_hash_cons() {
+        let x = HashConsed::new(42u32);
+        let y = HashConsed::new(42u32);
+        assert_eq!(x, y);
+        let z = serde_json::from_value(serde_json::to_value(x.clone()).unwrap()).unwrap();
+        assert_eq!(x, z);
+    }
+}
+
+pub mod hash_by_addr {
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+    use std::{
+        hash::{Hash, Hasher},
+        ops::Deref,
+    };
+
+    /// A wrapper around a smart pointer that hashes and compares the contents by the address of
+    /// the pointee.
+    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    pub struct HashByAddr<T>(pub T);
+
+    impl<T: Deref> HashByAddr<T> {
+        pub fn addr(&self) -> *const T::Target {
+            self.0.deref()
+        }
+    }
+
+    impl<T: Deref> Eq for HashByAddr<T> {}
+    impl<T: Deref> PartialEq for HashByAddr<T> {
+        fn eq(&self, other: &Self) -> bool {
+            std::ptr::addr_eq(self.addr(), other.addr())
+        }
+    }
+
+    impl<T: Deref> Hash for HashByAddr<T> {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.addr().hash(state);
+        }
+    }
+
+    // Delegate `Ord` impls to the derefed value.
+    impl<T: Deref<Target: PartialOrd>> PartialOrd for HashByAddr<T> {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            self.0.partial_cmp(&other.0)
+        }
+    }
+    impl<T: Deref<Target: Ord>> Ord for HashByAddr<T> {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.0.cmp(&other.0)
         }
     }
 }

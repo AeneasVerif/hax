@@ -89,7 +89,7 @@ mod types {
         /// A ID table session, providing fresh IDs.
         pub id_table_session: id_table::Session,
         /// Map that recovers rustc args for a given `ItemRef`.
-        pub reverse_item_refs_map: HashMap<id_table::Id, ty::GenericArgsRef<'tcx>>,
+        pub reverse_item_refs_map: HashMap<ItemRef, ty::GenericArgsRef<'tcx>>,
         /// We create some artificial items; their def_ids are stored here. See the
         /// `synthetic_items` module.
         pub synthetic_def_ids: HashMap<SyntheticItem, RDefId>,

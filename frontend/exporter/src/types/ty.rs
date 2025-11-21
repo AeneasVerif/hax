@@ -3,7 +3,6 @@
 use crate::prelude::*;
 use crate::sinto_as_usize;
 use crate::sinto_todo;
-use std::sync::Arc;
 
 #[cfg(feature = "rustc")]
 use rustc_hir::def::DefKind as RDefKind;
@@ -477,17 +476,14 @@ pub struct ItemRefContents {
 #[derive(Clone, Debug, JsonSchema, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct ItemRef {
-    pub(crate) contents: id_table::Node<ItemRefContents>,
+    pub(crate) contents: id_table::hash_consing::HashConsed<ItemRefContents>,
 }
 
 impl ItemRefContents {
     #[cfg(feature = "rustc")]
-    fn intern<'tcx, S: BaseState<'tcx>>(self, s: &S) -> ItemRef {
-        s.with_global_cache(|cache| {
-            let table_session = &mut cache.id_table_session;
-            let contents = id_table::Node::new(self, table_session);
-            ItemRef { contents }
-        })
+    fn intern<'tcx, S: BaseState<'tcx>>(self, _s: &S) -> ItemRef {
+        let contents = id_table::hash_consing::HashConsed::new(self);
+        ItemRef { contents }
     }
 }
 
@@ -522,15 +518,21 @@ impl ItemRef {
         // Whether to resolve trait references.
         resolve_trait_ref: bool,
         mut def_id: RDefId,
-        mut generics: ty::GenericArgsRef<'tcx>,
+        generics: ty::GenericArgsRef<'tcx>,
     ) -> ItemRef {
         use rustc_infer::infer::canonical::ir::TypeVisitableExt;
+        let tcx = s.base().tcx;
+        let typing_env = s.typing_env();
         let key = (def_id, generics, resolve_trait_ref);
+        // Normalize the generics. This is crucial for `rustc_args()` because if we don't we might
+        // get a `Option<T>` ItemRef with `rustc_args() = Option<<Self as Iterator>::Item>`, but
+        // because the mapping is global we'd return these args in item contexts where they aren't
+        // valid.
+        let mut generics = normalize(tcx, typing_env, generics);
         if let Some(item) = s.with_cache(|cache| cache.item_refs.get(&key).cloned()) {
             return item;
         }
 
-        let tcx = s.base().tcx;
         if matches!(tcx.def_kind(def_id), RDefKind::Closure) {
             // Rustc gives generic extra generic for inference that we don't care about.
             generics = generics.truncate_to(tcx, tcx.generics_of(tcx.typeck_root_def_id(def_id)));
@@ -608,7 +610,7 @@ impl ItemRef {
             cache.item_refs.insert(key, item.clone());
         });
         s.with_global_cache(|cache| {
-            cache.reverse_item_refs_map.insert(item.id(), generics);
+            cache.reverse_item_refs_map.insert(item.clone(), generics);
         });
         item
     }
@@ -628,7 +630,7 @@ impl ItemRef {
         s.with_global_cache(|cache| {
             cache
                 .reverse_item_refs_map
-                .insert(item.id(), ty::GenericArgsRef::default());
+                .insert(item.clone(), ty::GenericArgsRef::default());
         });
         item
     }
@@ -666,16 +668,11 @@ impl ItemRef {
         &self.contents
     }
 
-    /// Get a unique id identitying this `ItemRef`.
-    pub fn id(&self) -> id_table::Id {
-        self.contents.id()
-    }
-
     /// Recover the original rustc args that generated this `ItemRef`. Will panic if the `ItemRef`
     /// was built by hand instead of using `translate_item_ref`.
     #[cfg(feature = "rustc")]
     pub fn rustc_args<'tcx, S: BaseState<'tcx>>(&self, s: &S) -> ty::GenericArgsRef<'tcx> {
-        s.with_global_cache(|cache| *cache.reverse_item_refs_map.get(&self.id()).unwrap())
+        s.with_global_cache(|cache| *cache.reverse_item_refs_map.get(self).unwrap())
     }
 
     /// Mutate the `DefId`, keeping the same generic args.
@@ -690,7 +687,7 @@ impl ItemRef {
         f(&mut contents.def_id);
         let new = contents.intern(s);
         s.with_global_cache(|cache| {
-            cache.reverse_item_refs_map.insert(new.id(), args);
+            cache.reverse_item_refs_map.insert(new.clone(), args);
         });
         new
     }
@@ -1018,25 +1015,18 @@ impl<'tcx, S: UnderOwnerState<'tcx>> SInto<S, Box<Ty>> for ty::Ty<'tcx> {
 #[derive(Clone, Debug, JsonSchema, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(transparent)]
 pub struct Ty {
-    pub(crate) kind: id_table::Node<TyKind>,
+    pub(crate) kind: id_table::hash_consing::HashConsed<TyKind>,
 }
 
 impl Ty {
     #[cfg(feature = "rustc")]
-    pub fn new<'tcx, S: BaseState<'tcx>>(s: &S, kind: TyKind) -> Self {
-        s.with_global_cache(|cache| {
-            let table_session = &mut cache.id_table_session;
-            let kind = id_table::Node::new(kind, table_session);
-            Ty { kind }
-        })
-    }
-
-    pub fn inner(&self) -> &Arc<TyKind> {
-        self.kind.inner()
+    pub fn new<'tcx, S: BaseState<'tcx>>(_s: &S, kind: TyKind) -> Self {
+        let kind = id_table::hash_consing::HashConsed::new(kind);
+        Ty { kind }
     }
 
     pub fn kind(&self) -> &TyKind {
-        self.inner().as_ref()
+        self.kind.inner()
     }
 }
 
