@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{id_table::hash_consing::HashConsed, prelude::*};
 
 #[cfg(feature = "rustc")]
 pub mod resolution;
@@ -169,14 +169,23 @@ pub enum DestructData {
 /// need to combine several concrete trait implementation items. For example, `((1u8, 2u8),
 /// "hello").clone()` combines the generic implementation of `Clone` for `(A, B)` with the
 /// concrete implementations for `u8` and `&str`, represented as a tree.
+pub type ImplExpr = HashConsed<ImplExprContents>;
+
 #[derive_group(Serializers)]
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, JsonSchema, AdtInto)]
 #[args(<'tcx, S: UnderOwnerState<'tcx> >, from: resolution::ImplExpr<'tcx>, state: S as s)]
-pub struct ImplExpr {
+pub struct ImplExprContents {
     /// The trait this is an impl for.
     pub r#trait: Binder<TraitRef>,
     /// The kind of implemention of the root of the tree.
     pub r#impl: ImplExprAtom,
+}
+
+#[cfg(feature = "rustc")]
+impl<'tcx, S: UnderOwnerState<'tcx>> SInto<S, ImplExpr> for resolution::ImplExpr<'tcx> {
+    fn sinto(&self, s: &S) -> ImplExpr {
+        HashConsed::new(self.sinto(s))
+    }
 }
 
 /// Given a clause `clause` in the context of some impl block `impl_did`, susbts correctly `Self`
@@ -233,7 +242,7 @@ pub fn solve_trait<'tcx, S: UnderOwnerState<'tcx>>(
     }
     let resolved =
         s.with_predicate_searcher(|pred_searcher| pred_searcher.resolve(&trait_ref, &warn));
-    let impl_expr = match resolved {
+    let impl_expr: ImplExpr = match resolved {
         Ok(x) => x.sinto(s),
         Err(e) => crate::fatal!(s, "{}", e),
     };
