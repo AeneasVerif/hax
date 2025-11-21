@@ -27,6 +27,22 @@ mod id_table {
             self.value.as_ref()
         }
     }
+    pub mod hash_consing {
+        use serde::{Deserialize, Serialize};
+        use std::sync::Arc;
+
+        #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+        pub struct HashConsed<T> {
+            pub value: Arc<T>,
+        }
+
+        impl<T> std::ops::Deref for HashConsed<T> {
+            type Target = T;
+            fn deref(&self) -> &Self::Target {
+                self.value.as_ref()
+            }
+        }
+    }
 }
 
 /// Name of the current crate

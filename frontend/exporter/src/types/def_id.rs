@@ -164,7 +164,7 @@ impl<S> SInto<S, MacroKinds> for rustc_hir::def::MacroKinds {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(not(feature = "extract_names_mode"), derive(JsonSchema))]
 pub struct DefId {
-    pub(crate) contents: crate::id_table::Node<DefIdContents>,
+    pub(crate) contents: crate::id_table::hash_consing::HashConsed<DefIdContents>,
 }
 
 #[derive_group(Serializers)]
@@ -190,9 +190,8 @@ pub struct DefIdContents {
 
 #[cfg(feature = "rustc")]
 impl DefIdContents {
-    pub fn make_def_id<'tcx, S: BaseState<'tcx>>(self, s: &S) -> DefId {
-        let contents =
-            s.with_global_cache(|cache| id_table::Node::new(self, &mut cache.id_table_session));
+    pub fn make_def_id<'tcx, S: BaseState<'tcx>>(self, _s: &S) -> DefId {
+        let contents = id_table::hash_consing::HashConsed::new(self);
         DefId { contents }
     }
 }
