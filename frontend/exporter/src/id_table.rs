@@ -18,7 +18,7 @@
 /// global state.
 use crate::prelude::*;
 use std::{
-    hash::{Hash, Hasher},
+    hash::Hash,
     sync::{Arc, LazyLock, Mutex, MutexGuard, atomic::Ordering},
 };
 
@@ -33,7 +33,6 @@ pub struct Id {
 /// A session providing fresh IDs for ID table.
 #[derive(Default, Debug)]
 pub struct Session {
-    next_id: Id,
     table: Table,
 }
 
@@ -51,84 +50,6 @@ pub enum Value {
     ItemRef(Arc<ItemRefContents>),
 }
 
-impl SupportedType<Value> for TyKind {
-    fn to_types(value: Arc<Self>) -> Value {
-        Value::Ty(value)
-    }
-    fn from_types(t: &Value) -> Option<Arc<Self>> {
-        match t {
-            Value::Ty(value) => Some(value.clone()),
-            _ => None,
-        }
-    }
-}
-
-impl SupportedType<Value> for DefIdContents {
-    fn to_types(value: Arc<Self>) -> Value {
-        Value::DefId(value)
-    }
-    fn from_types(t: &Value) -> Option<Arc<Self>> {
-        match t {
-            Value::DefId(value) => Some(value.clone()),
-            _ => None,
-        }
-    }
-}
-
-impl SupportedType<Value> for ItemRefContents {
-    fn to_types(value: Arc<Self>) -> Value {
-        Value::ItemRef(value)
-    }
-    fn from_types(t: &Value) -> Option<Arc<Self>> {
-        match t {
-            Value::ItemRef(value) => Some(value.clone()),
-            _ => None,
-        }
-    }
-}
-
-/// A node is a bundle of an ID with a value.
-#[derive(Deserialize, Serialize, Debug, JsonSchema, PartialOrd, Ord)]
-#[serde(into = "serde_repr::NodeRepr<T>")]
-#[serde(try_from = "serde_repr::NodeRepr<T>")]
-pub struct Node<T: 'static + SupportedType<Value>> {
-    id: Id,
-    value: Arc<T>,
-}
-
-impl<T: SupportedType<Value>> std::ops::Deref for Node<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        self.value.as_ref()
-    }
-}
-
-/// Hax relies on hashes being deterministic for predicates
-/// ids. Identifiers are not deterministic: we implement hash for
-/// `Node` manually, discarding the field `id`.
-impl<T: SupportedType<Value> + Hash> Hash for Node<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.value.as_ref().hash(state);
-    }
-}
-impl<T: SupportedType<Value> + Eq> Eq for Node<T> {}
-impl<T: SupportedType<Value> + PartialEq> PartialEq for Node<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.value == other.value
-    }
-}
-
-/// Manual implementation of `Clone` that doesn't require a `Clone`
-/// bound on `T`.
-impl<T: SupportedType<Value>> Clone for Node<T> {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id.clone(),
-            value: self.value.clone(),
-        }
-    }
-}
-
 /// A table is a map from IDs to `Value`s. When serialized, we
 /// represent a table as a *sorted* vector. Indeed, the values stored
 /// in the table might reference each other, without cycle, so the
@@ -144,7 +65,6 @@ mod heterogeneous_map {
 
     use std::collections::HashMap;
     use std::hash::Hash;
-    use std::sync::Arc;
     #[derive(Clone, Debug)]
     /// An heterogenous map is a map from `Key` to `Value`. It provide
     /// the methods `insert` and `get` for any type `T` that
@@ -158,12 +78,6 @@ mod heterogeneous_map {
     }
 
     impl<Key: Hash + Eq + PartialEq, Value> HeterogeneousMap<Key, Value> {
-        pub(super) fn insert<T>(&mut self, key: Key, value: Arc<T>)
-        where
-            T: SupportedType<Value>,
-        {
-            self.insert_raw_value(key, T::to_types(value));
-        }
         pub(super) fn insert_raw_value(&mut self, key: Key, value: Value) {
             self.0.insert(key, value);
         }
@@ -173,47 +87,9 @@ mod heterogeneous_map {
         pub(super) fn into_iter(self) -> impl Iterator<Item = (Key, Value)> {
             self.0.into_iter()
         }
-        pub(super) fn get<T>(&self, key: &Key) -> Option<Option<Arc<T>>>
-        where
-            T: SupportedType<Value>,
-        {
-            self.0.get(key).map(T::from_types)
-        }
-    }
-
-    /// A type that can be mapped to `Value` and optionally
-    /// reconstructed back.
-    pub trait SupportedType<Value>: std::fmt::Debug {
-        fn to_types(value: Arc<Self>) -> Value;
-        fn from_types(t: &Value) -> Option<Arc<Self>>;
     }
 }
 use heterogeneous_map::*;
-
-impl Session {
-    fn fresh_id(&mut self) -> Id {
-        let id = self.next_id.id;
-        self.next_id.id += 1;
-        Id { id }
-    }
-}
-
-impl<T: Sync + Send + 'static + SupportedType<Value>> Node<T> {
-    pub fn new(value: T, session: &mut Session) -> Self {
-        let id = session.fresh_id();
-        let value = Arc::new(value);
-        session.table.0.insert(id.clone(), value.clone());
-        Self { id, value }
-    }
-
-    pub fn inner(&self) -> &Arc<T> {
-        &self.value
-    }
-
-    pub fn id(&self) -> Id {
-        self.id
-    }
-}
 
 /// Wrapper for a type `T` that creates a bundle containing both a ID
 /// table and a value `T`. That value may contains `Node` values
@@ -295,60 +171,12 @@ impl<'de, T: Deserialize<'de>> serde::Deserialize<'de> for WithTable<T> {
 mod serde_repr {
     use super::*;
 
-    #[derive(Serialize, Deserialize, JsonSchema, Debug)]
-    pub(super) struct NodeRepr<T> {
-        id: Id,
-        value: Option<Arc<T>>,
-    }
-
     #[derive(Serialize)]
     pub(super) struct Pair(Id, Value);
     pub(super) type SortedIdValuePairs = Vec<Pair>;
 
     #[derive(Serialize, Deserialize)]
     pub(super) struct WithTableRepr<T>(pub(super) Table, pub(super) T);
-
-    impl<T: SupportedType<Value>> Into<NodeRepr<T>> for Node<T> {
-        fn into(self) -> NodeRepr<T> {
-            let value = if serialize_use_id() {
-                None
-            } else {
-                Some(self.value.clone())
-            };
-            let id = self.id;
-            NodeRepr { value, id }
-        }
-    }
-
-    impl<T: 'static + SupportedType<Value>> TryFrom<NodeRepr<T>> for Node<T> {
-        type Error = serde::de::value::Error;
-
-        fn try_from(cached: NodeRepr<T>) -> Result<Self, Self::Error> {
-            use serde::de::Error;
-            let table = DESERIALIZATION_STATE.lock().unwrap();
-            let id = cached.id;
-            let kind = if let Some(kind) = cached.value {
-                kind
-            } else {
-                table
-                    .0
-                    .get(&id)
-                    .ok_or_else(|| {
-                        Self::Error::custom(&format!(
-                            "Stateful deserialization failed for id {:?}: not found in cache",
-                            id
-                        ))
-                    })?
-                    .ok_or_else(|| {
-                        Self::Error::custom(&format!(
-                            "Stateful deserialization failed for id {:?}: wrong type",
-                            id
-                        ))
-                    })?
-            };
-            Ok(Self { value: kind, id })
-        }
-    }
 
     impl<'de> serde::Deserialize<'de> for Pair {
         fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
