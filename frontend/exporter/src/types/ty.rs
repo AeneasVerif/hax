@@ -522,15 +522,21 @@ impl ItemRef {
         // Whether to resolve trait references.
         resolve_trait_ref: bool,
         mut def_id: RDefId,
-        mut generics: ty::GenericArgsRef<'tcx>,
+        generics: ty::GenericArgsRef<'tcx>,
     ) -> ItemRef {
         use rustc_infer::infer::canonical::ir::TypeVisitableExt;
+        let tcx = s.base().tcx;
+        let typing_env = s.typing_env();
         let key = (def_id, generics, resolve_trait_ref);
+        // Normalize the generics. This is crucial for `rustc_args()` because if we don't we might
+        // get a `Option<T>` ItemRef with `rustc_args() = Option<<Self as Iterator>::Item>`, but
+        // because the mapping is global we'd return these args in item contexts where they aren't
+        // valid.
+        let mut generics = normalize(tcx, typing_env, generics);
         if let Some(item) = s.with_cache(|cache| cache.item_refs.get(&key).cloned()) {
             return item;
         }
 
-        let tcx = s.base().tcx;
         if matches!(tcx.def_kind(def_id), RDefKind::Closure) {
             // Rustc gives generic extra generic for inference that we don't care about.
             generics = generics.truncate_to(tcx, tcx.generics_of(tcx.typeck_root_def_id(def_id)));
@@ -667,8 +673,8 @@ impl ItemRef {
     }
 
     /// Get a unique id identitying this `ItemRef`.
-    pub fn id(&self) -> id_table::Id {
-        self.contents.id()
+    pub fn id(&self) -> Self {
+        self.clone()
     }
 
     /// Recover the original rustc args that generated this `ItemRef`. Will panic if the `ItemRef`
