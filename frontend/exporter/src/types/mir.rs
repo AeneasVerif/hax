@@ -256,12 +256,7 @@ fn translate_mir_const<'tcx, S: UnderOwnerState<'tcx>>(
             }
         }
         Const::Ty(_ty, c) => Value(c.sinto(s)),
-        Const::Unevaluated(ucv, ty) => {
-            use crate::rustc_middle::query::Key;
-            let span = span.substitute_dummy(
-                tcx.def_ident_span(ucv.def)
-                    .unwrap_or_else(|| ucv.def.default_span(tcx)),
-            );
+        Const::Unevaluated(ucv, _) => {
             match ucv.promoted {
                 Some(promoted) => {
                     // The def_id is not the real one: we don't want trait resolution to happen.
@@ -275,25 +270,10 @@ fn translate_mir_const<'tcx, S: UnderOwnerState<'tcx>>(
                 }
                 None => {
                     let ucv = ucv.shrink();
-                    if s.base().options.inline_anon_consts && is_anon_const(ucv.def, tcx) {
-                        if let Ok(evaluated) = konst.eval(tcx, s.typing_env(), rustc_span::DUMMY_SP)
-                            && let evaluated = mir::Const::Val(evaluated, ty)
-                            && evaluated != konst
-                        {
-                            translate_mir_const(s, span, evaluated)
-                        } else {
-                            // TODO: This is triggered when compiling using `generic_const_exprs`. We
-                            // might be able to get a MIR body from the def_id.
-                            let cv = ConstantExprKind::Todo(format!("{konst:?}"))
-                                .decorate(ty.sinto(s), span.sinto(s));
-                            Value(cv)
-                        }
-                    } else {
-                        let item = translate_item_ref(s, ucv.def, ucv.args);
-                        let kind = ConstantExprKind::NamedGlobal(item);
-                        let cv = kind.decorate(ty.sinto(s), span.sinto(s));
-                        Value(cv)
-                    }
+                    // We go through a `ty::Const`. This loses info that `ValTree`s don't capture
+                    // such as data in padding bytes.
+                    let val = ty::Const::new(tcx, ty::ConstKind::Unevaluated(ucv)).sinto(s);
+                    Value(val)
                 }
             }
         }
