@@ -273,18 +273,28 @@ fn translate_mir_const<'tcx, S: UnderOwnerState<'tcx>>(
                     });
                     Promoted(item)
                 }
-                None => match translate_constant_reference(s, span, ucv.shrink()) {
-                    Some(val) => Value(val),
-                    None => match eval_mir_constant(s, konst) {
-                        Some(val) => translate_mir_const(s, span, val),
-                        // TODO: This is triggered when compiling using `generic_const_exprs`. We
-                        // might be able to get a MIR body from the def_id.
-                        None => Value(
-                            ConstantExprKind::Todo(format!("{konst:?}"))
-                                .decorate(ty.sinto(s), span.sinto(s)),
-                        ),
-                    },
-                },
+                None => {
+                    let ucv = ucv.shrink();
+                    if s.base().options.inline_anon_consts && is_anon_const(ucv.def, tcx) {
+                        if let Ok(evaluated) = konst.eval(tcx, s.typing_env(), rustc_span::DUMMY_SP)
+                            && let evaluated = mir::Const::Val(evaluated, ty)
+                            && evaluated != konst
+                        {
+                            translate_mir_const(s, span, evaluated)
+                        } else {
+                            // TODO: This is triggered when compiling using `generic_const_exprs`. We
+                            // might be able to get a MIR body from the def_id.
+                            let cv = ConstantExprKind::Todo(format!("{konst:?}"))
+                                .decorate(ty.sinto(s), span.sinto(s));
+                            Value(cv)
+                        }
+                    } else {
+                        let item = translate_item_ref(s, ucv.def, ucv.args);
+                        let kind = ConstantExprKind::NamedGlobal(item);
+                        let cv = kind.decorate(ty.sinto(s), span.sinto(s));
+                        Value(cv)
+                    }
+                }
             }
         }
     }
