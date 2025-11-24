@@ -110,19 +110,8 @@ pub fn translate_constant_reference<'tcx>(
     let ty = tcx
         .try_normalize_erasing_regions(typing_env, ty)
         .unwrap_or(ty);
-    let kind = if let Some(assoc) = s.base().tcx.opt_associated_item(ucv.def)
-        && matches!(
-            assoc.container,
-            ty::AssocContainer::Trait | ty::AssocContainer::TraitImpl(..)
-        ) {
-        // This is an associated constant in a trait.
-        let name = assoc.name().to_string();
-        let impl_expr = self_clause_for_item(s, ucv.def, ucv.args).unwrap();
-        ConstantExprKind::TraitConst { impl_expr, name }
-    } else {
-        let item = translate_item_ref(s, ucv.def, ucv.args);
-        ConstantExprKind::GlobalName(item)
-    };
+    let item = translate_item_ref(s, ucv.def, ucv.args);
+    let kind = ConstantExprKind::NamedGlobal(item);
     let cv = kind.decorate(ty.sinto(s), span.sinto(s));
     Some(cv)
 }
@@ -311,7 +300,7 @@ fn op_to_const<'tcx, S: UnderOwnerState<'tcx>>(
             && let interpret::GlobalAlloc::Static(did) = tcx.global_alloc(alloc_id) =>
         {
             let item = translate_item_ref(s, did, ty::GenericArgsRef::default());
-            ConstantExprKind::GlobalName(item)
+            ConstantExprKind::NamedGlobal(item)
         }
         ty::Char | ty::Bool | ty::Uint(_) | ty::Int(_) | ty::Float(_) => {
             let scalar = ecx.read_scalar(&op)?;

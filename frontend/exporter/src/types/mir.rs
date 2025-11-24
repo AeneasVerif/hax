@@ -280,7 +280,7 @@ fn translate_mir_const<'tcx, S: UnderOwnerState<'tcx>>(
                         // TODO: This is triggered when compiling using `generic_const_exprs`. We
                         // might be able to get a MIR body from the def_id.
                         None => Value(
-                            ConstantExprKind::Todo("TranslateUneval".into())
+                            ConstantExprKind::Todo(format!("{konst:?}"))
                                 .decorate(ty.sinto(s), span.sinto(s)),
                         ),
                     },
