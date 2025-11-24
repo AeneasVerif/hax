@@ -131,13 +131,17 @@ impl<'tcx, S: UnderOwnerState<'tcx>> SInto<S, ConstantExpr> for ty::Const<'tcx> 
             }
 
             ty::ConstKind::Unevaluated(ucv) => {
-                if s.base().options.inline_anon_consts && is_anon_const(ucv.def, tcx) {
-                    match eval_ty_constant(s, ucv) {
-                        Some(val) => val.sinto(s),
-                        // TODO: This is triggered when compiling using `generic_const_exprs`
-                        None => supposely_unreachable_fatal!(s, "TranslateUneval"; {self, ucv}),
-                    }
+                if s.base().options.inline_anon_consts
+                    && is_anon_const(ucv.def, tcx)
+                    && let Some(val) = eval_ty_constant(s, ucv)
+                {
+                    val.sinto(s)
                 } else {
+                    use crate::rustc_middle::query::Key;
+                    let span = span.substitute_dummy(
+                        tcx.def_ident_span(ucv.def)
+                            .unwrap_or_else(|| ucv.def.default_span(tcx)),
+                    );
                     let item = translate_item_ref(s, ucv.def, ucv.args);
                     let kind = ConstantExprKind::NamedGlobal(item);
                     let ty = tcx.type_of(ucv.def).instantiate(tcx, ucv.args);
