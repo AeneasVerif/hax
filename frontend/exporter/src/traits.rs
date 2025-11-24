@@ -261,6 +261,17 @@ pub fn translate_item_ref<'tcx, S: UnderOwnerState<'tcx>>(
     ItemRef::translate(s, def_id, generics)
 }
 
+#[cfg(feature = "rustc")]
+pub fn inherits_parent_clauses<'tcx>(tcx: ty::TyCtxt<'tcx>, def_id: RDefId) -> bool {
+    use rustc_hir::def::DefKind::*;
+    match tcx.def_kind(def_id) {
+        AssocTy | AssocFn | AssocConst | Closure | Ctor(..) | Variant | AnonConst | InlineConst => {
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Solve the trait obligations for a specific item use (for example, a method call, an ADT, etc.)
 /// in the current context. Just like generic args include generics of parent items, this includes
 /// impl exprs for parent items.
@@ -278,13 +289,9 @@ pub fn solve_item_required_traits<'tcx, S: UnderOwnerState<'tcx>>(
         impl_exprs: &mut Vec<ImplExpr>,
     ) {
         let tcx = s.base().tcx;
-        use rustc_hir::def::DefKind::*;
-        match tcx.def_kind(def_id) {
-            AssocTy | AssocFn | AssocConst | Closure | Ctor(..) | Variant => {
-                let parent = tcx.parent(def_id);
-                accumulate(s, parent, generics, impl_exprs);
-            }
-            _ => {}
+        if inherits_parent_clauses(tcx, def_id) {
+            let parent = tcx.parent(def_id);
+            accumulate(s, parent, generics, impl_exprs);
         }
         let predicates = required_predicates(tcx, def_id, s.base().options.bounds_options);
         impl_exprs.extend(solve_item_traits_inner(s, generics, predicates));

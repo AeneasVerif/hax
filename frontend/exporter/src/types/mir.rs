@@ -147,7 +147,7 @@ pub mod mir_kinds {
                 id: DefId,
                 f: impl FnOnce(&Body<'tcx>) -> T,
             ) -> Option<T> {
-                Some(f(tcx.optimized_mir(id)))
+                tcx.is_mir_available(id).then(|| f(tcx.optimized_mir(id)))
             }
         }
 
@@ -157,7 +157,8 @@ pub mod mir_kinds {
                 id: DefId,
                 f: impl FnOnce(&Body<'tcx>) -> T,
             ) -> Option<T> {
-                Some(f(tcx.mir_for_ctfe(id)))
+                tcx.is_ctfe_mir_available(id)
+                    .then(|| f(tcx.mir_for_ctfe(id)))
             }
         }
 
