@@ -907,11 +907,18 @@ pub enum CoercionSource {
 
 #[derive_group(Serializers)]
 #[derive(AdtInto, Clone, Debug, JsonSchema)]
-#[args(<'tcx, S: UnderOwnerState<'tcx> + HasMir<'tcx>>, from: rustc_middle::mir::NullOp<'tcx>, state: S as s)]
+#[args(<'tcx, S: BaseState<'tcx>>, from: rustc_middle::mir::NullOp, state: S as _s)]
 pub enum NullOp {
-    OffsetOf(Vec<(VariantIdx, FieldIdx)>),
+    RuntimeChecks(RuntimeChecks),
+}
+
+#[derive_group(Serializers)]
+#[derive(AdtInto, Clone, Debug, JsonSchema)]
+#[args(<'tcx, S: BaseState<'tcx>>, from: rustc_middle::mir::RuntimeChecks, state: S as _s)]
+pub enum RuntimeChecks {
     UbChecks,
     ContractChecks,
+    OverflowChecks,
 }
 
 #[derive_group(Serializers)]
@@ -932,7 +939,7 @@ pub enum Rvalue {
     )]
     Cast(CastKind, Operand, Ty),
     BinaryOp(BinOp, (Operand, Operand)),
-    NullaryOp(NullOp, Ty),
+    NullaryOp(NullOp),
     UnaryOp(UnOp, Operand),
     Discriminant(Place),
     Aggregate(AggregateKind, IndexVec<FieldIdx, Operand>),

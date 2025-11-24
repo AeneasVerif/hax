@@ -375,7 +375,6 @@ pub struct ImplItem<Body: IsBody> {
 #[derive_group(Serializers)]
 #[derive(Clone, Debug, JsonSchema)]
 pub enum ImplItemKind<Body: IsBody> {
-    Const(Ty, Body),
     #[custom_arm(hir::ImplItemKind::Fn(sig, body) => {
                 ImplItemKind::Fn(make_fn_def::<Body, _>(sig, body, s))
         },)]
@@ -405,6 +404,9 @@ pub enum ImplItemKind<Body: IsBody> {
         ty: Ty,
         parent_bounds: Vec<(Clause, ImplExpr, Span)>,
     },
+    // Removed because I don't care to maintain HIR.
+    #[todo]
+    Todo(String),
 }
 
 /// Reflects [`hir::Impl`].
@@ -630,7 +632,6 @@ pub enum ItemKind<Body: IsBody> {
     ExternCrate(Option<Symbol>, Ident),
     Use(UsePath, UseKind),
     Static(Mutability, Ident, Ty, Body),
-    Const(Ident, Generics<Body>, Ty, Body),
     #[custom_arm(
         hir::ItemKind::Fn{ ident, sig, generics, body, .. } => {
             ItemKind::Fn {
@@ -690,6 +691,9 @@ pub enum ItemKind<Body: IsBody> {
     ),
     TraitAlias(Constness, Ident, Generics<Body>, GenericBounds),
     Impl(Impl<Body>),
+    // Removed because I don't care to maintain HIR.
+    #[todo]
+    Todo(String),
 }
 
 pub type EnumDef<Body> = Vec<Variant<Body>>;
@@ -700,7 +704,6 @@ pub type EnumDef<Body> = Vec<Variant<Body>>;
 #[derive(Clone, Debug, JsonSchema)]
 #[derive_group(Serializers)]
 pub enum TraitItemKind<Body: IsBody> {
-    Const(Ty, Option<Body>),
     #[custom_arm(
         hir::TraitItemKind::Fn(sig, hir::TraitFn::Required(id)) => {
             TraitItemKind::RequiredFn(sig.sinto(tcx), id.sinto(tcx))
@@ -721,6 +724,9 @@ pub enum TraitItemKind<Body: IsBody> {
         }
     )]
     Type(GenericBounds, Option<Ty>),
+    // Removed because I don't care to maintain HIR.
+    #[todo]
+    Todo(String),
 }
 
 /// Reflects [`hir::TraitItem`]
