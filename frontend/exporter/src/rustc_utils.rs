@@ -212,7 +212,7 @@ pub fn get_def_attrs<'tcx>(
     use RDefKind::*;
     match def_kind {
         // These kinds cause `get_attrs` to panic.
-        ConstParam | LifetimeParam | TyParam | ForeignMod => &[],
+        ConstParam | LifetimeParam | TyParam | ForeignMod | InlineConst => &[],
         _ => {
             if let Some(ldid) = def_id.as_local() {
                 tcx.hir_attrs(tcx.local_def_id_to_hir_id(ldid))
