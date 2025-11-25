@@ -3,6 +3,8 @@ use crate::prelude::*;
 #[cfg(feature = "rustc")]
 use rustc_hir::def::DefKind as RDefKind;
 #[cfg(feature = "rustc")]
+use rustc_middle::mir;
+#[cfg(feature = "rustc")]
 use rustc_middle::ty;
 #[cfg(feature = "rustc")]
 use rustc_span::def_id::DefId as RDefId;
@@ -835,11 +837,25 @@ where
                 RDefKind::InlineConst { .. } => ConstKind::InlineConst,
                 _ => unreachable!(),
             };
+            let body = get_body(s, args);
+
+            let self_ty = if matches!(kind, ConstKind::InlineConst)
+                && let get_ret_ty = (|body: &mir::Body<'tcx>| body.local_decls[mir::Local::ZERO].ty)
+                && let Some(ret_ty) = mir_kinds::CTFE::get_mir(tcx, def_id, get_ret_ty)
+                    .or_else(|| mir_kinds::Optimized::get_mir(tcx, def_id, get_ret_ty))
+            {
+                // Inline consts have a special `<const_ty>` param added to them for type inference
+                // purposes. `tcx.type_of` returns that, which is not useful to us. Instead, we get
+                // the real type from the MIR body which is sad but works.
+                ret_ty
+            } else {
+                type_of_self()
+            };
             FullDefKind::Const {
                 param_env: get_param_env(s, args),
-                ty: type_of_self().sinto(s),
+                ty: self_ty.sinto(s),
                 kind,
-                body: get_body(s, args),
+                body,
                 value: const_value(s, def_id, args_or_default()),
             }
         }
@@ -1239,10 +1255,10 @@ fn get_param_env<'tcx, S: UnderOwnerState<'tcx>>(
 ) -> ParamEnv {
     let tcx = s.base().tcx;
     let def_id = s.owner_id();
-    // Rustc adds generic params to closures for impl details purposes; we hide these.
-    let is_closure = matches!(tcx.def_kind(def_id), RDefKind::Closure);
+    // Rustc adds generic params to closures and inline consts for impl details purposes; we hide these.
+    let is_typeck_child = tcx.is_typeck_child(def_id);
     let mut generics = tcx.generics_of(def_id).sinto(s);
-    if is_closure {
+    if is_typeck_child {
         generics.params = Default::default();
     }
 
@@ -1255,7 +1271,7 @@ fn get_param_env<'tcx, S: UnderOwnerState<'tcx>>(
     match args {
         None => ParamEnv {
             generics,
-            predicates: if is_closure {
+            predicates: if is_typeck_child {
                 GenericPredicates::default()
             } else {
                 required_predicates(tcx, def_id, s.base().options.bounds_options).sinto(s)

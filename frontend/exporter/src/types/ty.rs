@@ -5,8 +5,6 @@ use crate::sinto_as_usize;
 use crate::sinto_todo;
 
 #[cfg(feature = "rustc")]
-use rustc_hir::def::DefKind as RDefKind;
-#[cfg(feature = "rustc")]
 use rustc_middle::ty;
 #[cfg(feature = "rustc")]
 use rustc_span::def_id::DefId as RDefId;
@@ -533,8 +531,8 @@ impl ItemRef {
             return item;
         }
 
-        if matches!(tcx.def_kind(def_id), RDefKind::Closure) {
-            // Rustc gives generic extra generic for inference that we don't care about.
+        if tcx.is_typeck_child(def_id) {
+            // Rustc gives closures/inline consts extra generic for inference that we don't care about.
             generics = generics.truncate_to(tcx, tcx.generics_of(tcx.typeck_root_def_id(def_id)));
         }
 

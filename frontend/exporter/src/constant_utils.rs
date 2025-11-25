@@ -45,7 +45,7 @@ pub enum ConstantExprKind {
     Tuple {
         fields: Vec<ConstantExpr>,
     },
-    /// A top-level constant or a constant appearing in an impl block.
+    /// A top-level or associated constant.
     ///
     /// Remark: constants *can* have generic parameters.
     /// Example:
@@ -57,23 +57,15 @@ pub enum ConstantExprKind {
     /// impl<const N: usize, T> V<N, T> {
     ///   const LEN: usize = N; // This has generics <N, T>
     /// }
-    /// ```
     ///
-    /// If `options.inline_anon_consts` is `false`, this is also used for inline const blocks and
-    /// advanced const generics expressions.
-    GlobalName(ItemRef),
-    /// A trait constant
-    ///
-    /// Ex.:
-    /// ```text
     /// impl Foo for Bar {
     ///   const C : usize = 32; // <-
     /// }
     /// ```
-    TraitConst {
-        impl_expr: ImplExpr,
-        name: String,
-    },
+    ///
+    /// If `options.inline_anon_consts` is `false`, this is also used for inline const blocks and
+    /// advanced const generics expressions.
+    NamedGlobal(ItemRef),
     /// A shared reference to a static variable.
     Borrow(ConstantExpr),
     /// A raw borrow (`*const` or `*mut`).
@@ -161,7 +153,7 @@ impl From<ConstantExpr> for Expr {
                 base: AdtExprBase::None,
                 user_ty: None,
             }),
-            GlobalName(item) => ExprKind::GlobalName {
+            NamedGlobal(item) => ExprKind::GlobalName {
                 item,
                 constructor: None,
             },
@@ -183,7 +175,7 @@ impl From<ConstantExpr> for Expr {
             Cast { source } => ExprKind::Cast {
                 source: source.into(),
             },
-            kind @ (FnPtr { .. } | TraitConst { .. } | Memory { .. }) => {
+            kind @ (FnPtr { .. } | Memory { .. }) => {
                 ExprKind::Todo(format!("Unsupported constant kind. kind={:#?}", kind))
             }
             Todo(msg) => ExprKind::Todo(msg),

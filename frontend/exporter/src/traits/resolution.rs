@@ -167,14 +167,9 @@ fn local_bound_predicates<'tcx>(
         options: BoundsOptions,
         predicates: &mut Vec<PolyTraitPredicate<'tcx>>,
     ) {
-        use DefKind::*;
-        match tcx.def_kind(def_id) {
-            // These inherit predicates from their parent.
-            AssocTy | AssocFn | AssocConst | Closure | Ctor(..) | Variant => {
-                let parent = tcx.parent(def_id);
-                acc_predicates(tcx, parent, options, predicates);
-            }
-            _ => {}
+        if crate::inherits_parent_clauses(tcx, def_id) {
+            let parent = tcx.parent(def_id);
+            acc_predicates(tcx, parent, options, predicates);
         }
         predicates.extend(
             required_predicates(tcx, def_id, options)

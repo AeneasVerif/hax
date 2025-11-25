@@ -147,7 +147,7 @@ pub mod mir_kinds {
                 id: DefId,
                 f: impl FnOnce(&Body<'tcx>) -> T,
             ) -> Option<T> {
-                Some(f(tcx.optimized_mir(id)))
+                tcx.is_mir_available(id).then(|| f(tcx.optimized_mir(id)))
             }
         }
 
@@ -157,7 +157,8 @@ pub mod mir_kinds {
                 id: DefId,
                 f: impl FnOnce(&Body<'tcx>) -> T,
             ) -> Option<T> {
-                Some(f(tcx.mir_for_ctfe(id)))
+                tcx.is_ctfe_mir_available(id)
+                    .then(|| f(tcx.mir_for_ctfe(id)))
             }
         }
 
@@ -256,12 +257,7 @@ fn translate_mir_const<'tcx, S: UnderOwnerState<'tcx>>(
             }
         }
         Const::Ty(_ty, c) => Value(c.sinto(s)),
-        Const::Unevaluated(ucv, ty) => {
-            use crate::rustc_middle::query::Key;
-            let span = span.substitute_dummy(
-                tcx.def_ident_span(ucv.def)
-                    .unwrap_or_else(|| ucv.def.default_span(tcx)),
-            );
+        Const::Unevaluated(ucv, _) => {
             match ucv.promoted {
                 Some(promoted) => {
                     // The def_id is not the real one: we don't want trait resolution to happen.
@@ -273,18 +269,13 @@ fn translate_mir_const<'tcx, S: UnderOwnerState<'tcx>>(
                     });
                     Promoted(item)
                 }
-                None => match translate_constant_reference(s, span, ucv.shrink()) {
-                    Some(val) => Value(val),
-                    None => match eval_mir_constant(s, konst) {
-                        Some(val) => translate_mir_const(s, span, val),
-                        // TODO: This is triggered when compiling using `generic_const_exprs`. We
-                        // might be able to get a MIR body from the def_id.
-                        None => Value(
-                            ConstantExprKind::Todo("TranslateUneval".into())
-                                .decorate(ty.sinto(s), span.sinto(s)),
-                        ),
-                    },
-                },
+                None => {
+                    let ucv = ucv.shrink();
+                    // We go through a `ty::Const`. This loses info that `ValTree`s don't capture
+                    // such as data in padding bytes.
+                    let val = ty::Const::new(tcx, ty::ConstKind::Unevaluated(ucv)).sinto(s);
+                    Value(val)
+                }
             }
         }
     }
@@ -907,11 +898,18 @@ pub enum CoercionSource {
 
 #[derive_group(Serializers)]
 #[derive(AdtInto, Clone, Debug, JsonSchema)]
-#[args(<'tcx, S: UnderOwnerState<'tcx> + HasMir<'tcx>>, from: rustc_middle::mir::NullOp<'tcx>, state: S as s)]
+#[args(<'tcx, S: BaseState<'tcx>>, from: rustc_middle::mir::NullOp, state: S as _s)]
 pub enum NullOp {
-    OffsetOf(Vec<(VariantIdx, FieldIdx)>),
+    RuntimeChecks(RuntimeChecks),
+}
+
+#[derive_group(Serializers)]
+#[derive(AdtInto, Clone, Debug, JsonSchema)]
+#[args(<'tcx, S: BaseState<'tcx>>, from: rustc_middle::mir::RuntimeChecks, state: S as _s)]
+pub enum RuntimeChecks {
     UbChecks,
     ContractChecks,
+    OverflowChecks,
 }
 
 #[derive_group(Serializers)]
@@ -932,7 +930,7 @@ pub enum Rvalue {
     )]
     Cast(CastKind, Operand, Ty),
     BinaryOp(BinOp, (Operand, Operand)),
-    NullaryOp(NullOp, Ty),
+    NullaryOp(NullOp),
     UnaryOp(UnOp, Operand),
     Discriminant(Place),
     Aggregate(AggregateKind, IndexVec<FieldIdx, Operand>),
