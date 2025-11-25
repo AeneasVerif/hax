@@ -85,7 +85,8 @@ where
                 pack: None,
                 flags: Default::default(),
             },
-            drop_glue: get_drop_glue_shim(s, args),
+            // We know these work in poly mode.
+            drop_glue: get_drop_glue_shim(s, args, true),
             destruct_impl,
         };
 
@@ -244,6 +245,19 @@ impl ItemRef {
     {
         let args = self.rustc_args(s);
         self.def_id.full_def_maybe_instantiated(s, Some(args))
+    }
+
+    /// Get the drop glue shim for this. Panics if the `DefKind` isn't appropriate. Drop glue shims
+    /// are normally translated by hax when safe to do so (i.e. for mono types). This method can be
+    /// used if you know what you're doing and want drop glue for a poly type. This may cause ICEs.
+    pub fn drop_glue_shim<'tcx, S, Body>(&self, s: &S) -> Body
+    where
+        Body: IsBody + TypeMappable,
+        S: BaseState<'tcx>,
+    {
+        let args = self.rustc_args(s);
+        let s = &s.with_owner_id(self.def_id.underlying_rust_def_id());
+        get_drop_glue_shim(s, Some(args), true).unwrap()
     }
 }
 
@@ -589,7 +603,7 @@ where
                 variants,
                 flags: def.flags().sinto(s),
                 repr: def.repr().sinto(s),
-                drop_glue: get_drop_glue_shim(s, args),
+                drop_glue: get_drop_glue_shim(s, args, false),
                 destruct_impl: virtual_impl_for(
                     s,
                     ty::TraitRef::new(tcx, destruct_trait, [type_of_self()]),
@@ -813,7 +827,7 @@ where
                 is_const: tcx.constness(def_id) == rustc_hir::Constness::Const,
                 args: ClosureArgs::sfrom(s, def_id, closure),
                 once_shim: get_closure_once_shim(s, closure_ty),
-                drop_glue: get_drop_glue_shim(s, args),
+                drop_glue: get_drop_glue_shim(s, args, false),
                 destruct_impl: virtual_impl_for(
                     s,
                     ty::TraitRef::new(tcx, destruct_trait, [type_of_self()]),
@@ -1237,15 +1251,26 @@ where
 }
 
 #[cfg(feature = "rustc")]
-fn get_drop_glue_shim<'tcx, S, Body>(s: &S, args: Option<ty::GenericArgsRef<'tcx>>) -> Option<Body>
+fn get_drop_glue_shim<'tcx, S, Body>(
+    s: &S,
+    args: Option<ty::GenericArgsRef<'tcx>>,
+    translate_poly_drop_glue: bool,
+) -> Option<Body>
 where
     S: UnderOwnerState<'tcx>,
     Body: IsBody + TypeMappable,
 {
     let tcx = s.base().tcx;
-    let mir = crate::drop_glue_shim(tcx, s.owner_id(), args)?;
-    let body = Body::from_mir(s, mir)?;
-    Some(body)
+    let def_id = s.owner_id();
+    if translate_poly_drop_glue || args.is_some() || tcx.generics_of(def_id).is_empty() {
+        let mir = crate::drop_glue_shim(tcx, def_id, args);
+        let body = Body::from_mir(s, mir)?;
+        Some(body)
+    } else {
+        // Drop elaboration does not handle generics correctly, so it can ICE on some types. To be
+        // safe we don't translate drop glue for poly types unless explicitly opted-in.
+        None
+    }
 }
 
 #[cfg(feature = "rustc")]

@@ -427,22 +427,14 @@ pub fn drop_glue_shim<'tcx>(
     tcx: ty::TyCtxt<'tcx>,
     def_id: RDefId,
     instantiate: Option<ty::GenericArgsRef<'tcx>>,
-) -> Option<mir::Body<'tcx>> {
+) -> mir::Body<'tcx> {
     let drop_in_place =
         tcx.require_lang_item(rustc_hir::LangItem::DropInPlace, rustc_span::DUMMY_SP);
     let ty = tcx.type_of(def_id);
     let ty = match instantiate {
-        None => {
-            if !tcx.generics_of(def_id).is_empty() {
-                // Hack: layout code panics if it can't fully normalize types, which can happen e.g. with a
-                // trait associated type. For now we only translate the glue for monomorphic types.
-                return None;
-            }
-            ty.instantiate_identity()
-        }
+        None => ty.instantiate_identity(),
         Some(args) => ty.instantiate(tcx, args),
     };
     let instance_kind = ty::InstanceKind::DropGlue(drop_in_place, Some(ty));
-    let mir = tcx.instance_mir(instance_kind).clone();
-    Some(mir)
+    tcx.instance_mir(instance_kind).clone()
 }
