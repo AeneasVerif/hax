@@ -298,6 +298,7 @@ pub struct MirBody<KIND> {
     pub basic_blocks: BasicBlocks,
     pub source_scopes: IndexVec<SourceScope, SourceScopeData>,
     pub tainted_by_errors: Option<ErrorGuaranteed>,
+    pub phase: MirPhase,
     #[value(std::marker::PhantomData)]
     pub _kind: std::marker::PhantomData<KIND>,
 }
@@ -310,6 +311,18 @@ pub struct SourceScopeData {
     pub parent_scope: Option<SourceScope>,
     pub inlined_parent_scope: Option<SourceScope>,
 }
+
+#[derive_group(Serializers)]
+#[derive(AdtInto, Clone, Debug, JsonSchema)]
+#[args(<'tcx, S: BaseState<'tcx>>, from: rustc_middle::mir::MirPhase, state: S as _s)]
+pub enum MirPhase {
+    Built,
+    Analysis(AnalysisPhase),
+    Runtime(RuntimePhase),
+}
+
+sinto_todo!(rustc_middle::mir, AnalysisPhase);
+sinto_todo!(rustc_middle::mir, RuntimePhase);
 
 #[derive_group(Serializers)]
 #[derive(AdtInto, Clone, Debug, JsonSchema)]
