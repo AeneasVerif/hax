@@ -176,6 +176,8 @@ pub(crate) fn valtree_to_constant_expr<'tcx, S: UnderOwnerState<'tcx>>(
     ty: rustc_middle::ty::Ty<'tcx>,
     span: rustc_span::Span,
 ) -> ConstantExpr {
+    let ty = normalize(s.base().tcx, s.typing_env(), ty);
+
     let kind = match (&*valtree, ty.kind()) {
         (_, ty::Ref(_, inner_ty, _)) => {
             ConstantExprKind::Borrow(valtree_to_constant_expr(s, valtree, *inner_ty, span))
