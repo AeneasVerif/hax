@@ -83,6 +83,9 @@ pub enum ConstantExprKind {
     ConstRef {
         id: ParamConst,
     },
+    /// A function definition, corresponding to a particular item. This is a ZST, unlike `FnPtr`.
+    FnDef(ItemRef),
+    /// A function pointer. This is an actual pointer to that function.
     FnPtr(ItemRef),
     /// A blob of memory containing the byte representation of the value. This can occur when
     /// evaluating MIR constants. Interpreting this back to a structured value is left as an
@@ -175,7 +178,7 @@ impl From<ConstantExpr> for Expr {
             Cast { source } => ExprKind::Cast {
                 source: source.into(),
             },
-            kind @ (FnPtr { .. } | Memory { .. }) => {
+            kind @ (FnDef { .. } | FnPtr(..) | Memory { .. }) => {
                 ExprKind::Todo(format!("Unsupported constant kind. kind={:#?}", kind))
             }
             Todo(msg) => ExprKind::Todo(msg),
