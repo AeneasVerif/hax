@@ -861,7 +861,7 @@ where
                 // Inline consts have a special `<const_ty>` param added to them for type inference
                 // purposes. `tcx.type_of` returns that, which is not useful to us. Instead, we get
                 // the real type from the MIR body which is sad but works.
-                ret_ty
+                inst_binder(tcx, s.typing_env(), args, ty::EarlyBinder::bind(ret_ty))
             } else {
                 type_of_self()
             };
