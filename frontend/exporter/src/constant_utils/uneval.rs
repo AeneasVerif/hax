@@ -1,6 +1,6 @@
 //! Reconstruct structured expressions from rustc's various constant representations.
 use super::*;
-use rustc_const_eval::interpret::{InterpResult, interp_ok};
+use rustc_const_eval::interpret::{FnVal, InterpResult, interp_ok};
 use rustc_middle::mir::interpret;
 use rustc_middle::{mir, ty};
 
@@ -355,7 +355,15 @@ fn op_to_const<'tcx, S: UnderOwnerState<'tcx>>(
         }
         ty::FnDef(def_id, args) => {
             let item = translate_item_ref(s, *def_id, args);
-            ConstantExprKind::FnPtr(item)
+            ConstantExprKind::FnDef(item)
+        }
+        ty::FnPtr(..) => {
+            let fn_ptr = ecx.read_pointer(&op)?;
+            let FnVal::Instance(instance) = ecx.get_ptr_fn(fn_ptr)?;
+            let def_id = instance.def_id();
+            let generics = instance.args;
+            let fun = translate_item_ref(s, def_id, generics);
+            ConstantExprKind::FnPtr(fun)
         }
         ty::RawPtr(..) | ty::Ref(..) => {
             if let Some(op) = ecx.deref_pointer(&op).discard_err() {
@@ -378,8 +386,7 @@ fn op_to_const<'tcx, S: UnderOwnerState<'tcx>>(
                 ConstantExprKind::Literal(lit)
             }
         }
-        ty::FnPtr(..)
-        | ty::Dynamic(..)
+        ty::Dynamic(..)
         | ty::Foreign(..)
         | ty::Pat(..)
         | ty::UnsafeBinder(..)
