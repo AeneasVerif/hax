@@ -1143,32 +1143,12 @@ pub enum TyKind {
     #[todo]
     Todo(String),
 }
-
-/// Transform existential predicates into properly resolved predicates.
 #[cfg(feature = "rustc")]
-fn make_dyn<'tcx, S: UnderOwnerState<'tcx>>(
+fn searcher_for_traits<'tcx, S: UnderOwnerState<'tcx>>(
     s: &S,
-    epreds: &'tcx ty::List<ty::Binder<'tcx, ty::ExistentialPredicate<'tcx>>>,
-    region: &ty::Region<'tcx>,
-) -> TyKind {
+    clauses: &Vec<ty::Clause<'tcx>>,
+) -> PredicateSearcher<'tcx> {
     let tcx = s.base().tcx;
-    let def_id = s.owner_id();
-    let span = rustc_span::DUMMY_SP.sinto(s);
-
-    // Pretend there's an extra type in the environment.
-    let new_param_ty = {
-        let generics = tcx.generics_of(def_id);
-        let param_count = generics.parent_count + generics.own_params.len();
-        ty::ParamTy::new(param_count as u32 + 1, rustc_span::Symbol::intern("_dyn"))
-    };
-    let new_ty = new_param_ty.to_ty(tcx);
-
-    // Set the new type as the `Self` parameter of our predicates.
-    let clauses: Vec<ty::Clause<'_>> = epreds
-        .iter()
-        .map(|epred| epred.with_self_ty(tcx, new_ty))
-        .collect();
-
     // Populate a predicate searcher that knows about the `dyn` clauses.
     let mut predicate_searcher = s.with_predicate_searcher(|ps| ps.clone());
     predicate_searcher
@@ -1185,6 +1165,40 @@ fn make_dyn<'tcx, S: UnderOwnerState<'tcx>>(
         ),
         rustc_trait_selection::traits::ObligationCause::dummy(),
     ));
+    predicate_searcher
+}
+
+#[cfg(feature = "rustc")]
+fn fresh_param_ty<'tcx, S: UnderOwnerState<'tcx>>(s: &S) -> ty::ParamTy {
+    let tcx = s.base().tcx;
+    let def_id = s.owner_id();
+    let generics = tcx.generics_of(def_id);
+    let param_count = generics.parent_count + generics.own_params.len();
+    ty::ParamTy::new(param_count as u32 + 1, rustc_span::Symbol::intern("_dyn"))
+}
+
+/// Transform existential predicates into properly resolved predicates.
+#[cfg(feature = "rustc")]
+fn make_dyn<'tcx, S: UnderOwnerState<'tcx>>(
+    s: &S,
+    epreds: &'tcx ty::List<ty::Binder<'tcx, ty::ExistentialPredicate<'tcx>>>,
+    region: &ty::Region<'tcx>,
+) -> TyKind {
+    let tcx = s.base().tcx;
+    let span = rustc_span::DUMMY_SP.sinto(s);
+
+    // Pretend there's an extra type in the environment.
+    let new_param_ty = fresh_param_ty(s);
+    let new_ty = new_param_ty.to_ty(tcx);
+
+    // Set the new type as the `Self` parameter of our predicates.
+    let clauses: Vec<ty::Clause<'_>> = epreds
+        .iter()
+        .map(|epred| epred.with_self_ty(tcx, new_ty))
+        .collect();
+
+    // Populate a predicate searcher that knows about the `dyn` clauses.
+    let mut predicate_searcher = searcher_for_traits(s, &clauses);
 
     // Using the predicate searcher, translate the predicates. Only the projection predicates need
     // to be handled specially.
@@ -1331,8 +1345,13 @@ pub enum PointerCoercion {
 #[derive_group(Serializers)]
 #[derive(Clone, Debug, JsonSchema)]
 pub enum UnsizingMetadata {
+    /// Unsize an array to a slice, storing the length as metadata.
     Length(ConstantExpr),
-    VTablePtr(ImplExpr),
+    /// Unsize a non-dyn type to a dyn type, adding a vtable pointer as metadata.
+    DirectVTable(ImplExpr),
+    /// Unsize a dyn-type to another dyn-type, (optionally) indexing within the current vtable.
+    NestedVTable(ImplExpr),
+    /// Couldn't compute
     Unknown,
 }
 
@@ -1355,35 +1374,54 @@ impl PointerCoercion {
             }
             ty::adjustment::PointerCoercion::ArrayToPointer => PointerCoercion::ArrayToPointer,
             ty::adjustment::PointerCoercion::Unsize => {
-                // We only support unsizing behind references, pointers and boxes for now.
-                let meta = match (src_ty.builtin_deref(true), tgt_ty.builtin_deref(true)) {
-                    (Some(src_ty), Some(tgt_ty)) => {
-                        let tcx = s.base().tcx;
-                        let typing_env = s.typing_env();
-                        let (src_ty, tgt_ty) =
-                            tcx.struct_lockstep_tails_raw(src_ty, tgt_ty, |ty| {
-                                normalize(tcx, typing_env, ty)
-                            });
-                        match tgt_ty.kind() {
-                            ty::Slice(_) | ty::Str => match src_ty.kind() {
-                                ty::Array(_, len) => {
-                                    let len = len.sinto(s);
-                                    UnsizingMetadata::Length(len)
-                                }
-                                _ => UnsizingMetadata::Unknown,
-                            },
-                            ty::Dynamic(preds, ..) => {
-                                let pred = preds[0].with_self_ty(tcx, src_ty);
-                                let clause = pred.as_trait_clause().expect(
-                                    "the first `ExistentialPredicate` of `TyKind::Dynamic` \
+                // TODO: to properly find out what field we want, we should use the query
+                // `coerce_unsized_info`, which we call recursively to get the list of fields
+                // to go into until we reach a pointer/reference.
+                // We should also pass this list of field IDs in the unsizing metadata.
+
+                let (Some(src_ty), Some(tgt_ty)) =
+                    (src_ty.builtin_deref(true), tgt_ty.builtin_deref(true))
+                else {
+                    return PointerCoercion::Unsize(UnsizingMetadata::Unknown);
+                };
+
+                let tcx = s.base().tcx;
+                let typing_env = s.typing_env();
+                let (src_ty, tgt_ty) = tcx
+                    .struct_lockstep_tails_raw(src_ty, tgt_ty, |ty| normalize(tcx, typing_env, ty));
+
+                let meta = match (&src_ty.kind(), &tgt_ty.kind()) {
+                    (ty::Array(_, len), ty::Slice(_)) => {
+                        let len = len.sinto(s);
+                        UnsizingMetadata::Length(len)
+                    }
+                    (ty::Dynamic(from_preds, _), ty::Dynamic(to_preds, ..)) => {
+                        let src_ty = fresh_param_ty(s).to_ty(tcx);
+                        let to_pred = to_preds[0].with_self_ty(tcx, src_ty);
+                        let from_preds: Vec<ty::Clause<'tcx>> = from_preds
+                            .iter()
+                            .map(|p| p.clone().with_self_ty(tcx, src_ty))
+                            .collect::<Vec<_>>();
+                        let mut searcher = searcher_for_traits(s, &from_preds);
+                        let impl_expr = searcher
+                            .resolve(
+                                &to_pred.as_trait_clause().unwrap().to_poly_trait_ref(),
+                                &|_| {},
+                            )
+                            .s_unwrap(s)
+                            .sinto(s);
+                        UnsizingMetadata::NestedVTable(impl_expr)
+                    }
+                    (_, ty::Dynamic(preds, ..)) => {
+                        let pred = preds[0].with_self_ty(tcx, src_ty);
+                        let clause = pred.as_trait_clause().expect(
+                            "the first `ExistentialPredicate` of `TyKind::Dynamic` \
                                         should be a trait clause",
-                                );
-                                let tref = clause.rebind(clause.skip_binder().trait_ref);
-                                let impl_expr = solve_trait(s, tref);
-                                UnsizingMetadata::VTablePtr(impl_expr)
-                            }
-                            _ => UnsizingMetadata::Unknown,
-                        }
+                        );
+                        let tref = clause.rebind(clause.skip_binder().trait_ref);
+                        let impl_expr = solve_trait(s, tref);
+
+                        UnsizingMetadata::DirectVTable(impl_expr)
                     }
                     _ => UnsizingMetadata::Unknown,
                 };
