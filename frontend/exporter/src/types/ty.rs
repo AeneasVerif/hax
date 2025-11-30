@@ -1331,13 +1331,59 @@ pub enum PointerCoercion {
 #[derive_group(Serializers)]
 #[derive(Clone, Debug, JsonSchema)]
 pub enum UnsizingMetadata {
+    /// Unsize an array to a slice, storing the length as metadata.
     Length(ConstantExpr),
-    VTablePtr(ImplExpr),
+    /// Unsize a non-dyn type to a dyn type, adding a vtable pointer as metadata.
+    DirectVTable(ImplExpr),
+    /// Unsize a dyn-type to another dyn-type, (optionally) indexing within the current vtable.
+    NestedVTable {
+        from_impl_expr: ImplExpr,
+        impl_expr: ImplExpr,
+        reindexes: bool,
+    },
+    /// Couldn't compute
     Unknown,
 }
 
 #[cfg(feature = "rustc")]
 impl PointerCoercion {
+    fn deref_middle_tys<'tcx, S: UnderOwnerState<'tcx>>(
+        s: &S,
+        src_ty: ty::Ty<'tcx>,
+        dst_ty: ty::Ty<'tcx>,
+    ) -> Option<(ty::Ty<'tcx>, ty::Ty<'tcx>)> {
+        // See:
+        // https://github.com/rust-lang/rust/blob/b3f8586fb1e4859678d6b231e780ff81801d2282/compiler/rustc_codegen_ssa/src/base.rs#L220
+        match (src_ty.kind(), dst_ty.kind()) {
+            (&ty::Ref(_, a, _), &ty::Ref(_, b, _) | &ty::RawPtr(b, _))
+            | (&ty::RawPtr(a, _), &ty::RawPtr(b, _)) => Some((a, b)),
+            (&ty::Adt(_, _), &ty::Adt(_, _)) => {
+                let tcx: ty::TyCtxt<'_> = s.base().tcx;
+                let ty_env = s.typing_env();
+                let layout_cx = ty::layout::LayoutCx::new(tcx, ty_env);
+
+                let Ok(src_layout) = tcx.layout_of(ty_env.as_query_input(src_ty)) else {
+                    return None;
+                };
+                let Ok(dst_layout) = tcx.layout_of(ty_env.as_query_input(dst_ty)) else {
+                    return None;
+                };
+
+                let mut result = None;
+                for i in 0..src_layout.layout.fields.count() {
+                    let src_f = src_layout.field(&layout_cx, i);
+                    if src_f.is_1zst() {
+                        continue;
+                    }
+                    let dst_f = dst_layout.field(&layout_cx, i);
+                    result = Some((src_f.ty, dst_f.ty));
+                }
+                result.and_then(|(src, dst)| Self::deref_middle_tys(s, src, dst))
+            }
+            _ => None,
+        }
+    }
+
     pub fn sfrom<'tcx, S: UnderOwnerState<'tcx>>(
         s: &S,
         coercion: ty::adjustment::PointerCoercion,
@@ -1355,34 +1401,48 @@ impl PointerCoercion {
             }
             ty::adjustment::PointerCoercion::ArrayToPointer => PointerCoercion::ArrayToPointer,
             ty::adjustment::PointerCoercion::Unsize => {
-                // We only support unsizing behind references, pointers and boxes for now.
-                let meta = match (src_ty.builtin_deref(true), tgt_ty.builtin_deref(true)) {
-                    (Some(src_ty), Some(tgt_ty)) => {
-                        let tcx = s.base().tcx;
-                        let typing_env = s.typing_env();
-                        let (src_ty, tgt_ty) =
-                            tcx.struct_lockstep_tails_raw(src_ty, tgt_ty, |ty| {
-                                normalize(tcx, typing_env, ty)
-                            });
-                        match tgt_ty.kind() {
-                            ty::Slice(_) | ty::Str => match src_ty.kind() {
-                                ty::Array(_, len) => {
-                                    let len = len.sinto(s);
-                                    UnsizingMetadata::Length(len)
-                                }
-                                _ => UnsizingMetadata::Unknown,
-                            },
-                            ty::Dynamic(preds, ..) => {
-                                let pred = preds[0].with_self_ty(tcx, src_ty);
-                                let clause = pred.as_trait_clause().expect(
-                                    "the first `ExistentialPredicate` of `TyKind::Dynamic` \
+                let Some((src_ty, tgt_ty)) = Self::deref_middle_tys(s, src_ty, tgt_ty) else {
+                    return PointerCoercion::Unsize(UnsizingMetadata::Unknown);
+                };
+
+                let tcx = s.base().tcx;
+                let typing_env = s.typing_env();
+                let (src_ty, tgt_ty) = tcx
+                    .struct_lockstep_tails_raw(src_ty, tgt_ty, |ty| normalize(tcx, typing_env, ty));
+
+                let meta = match (&src_ty.kind(), &tgt_ty.kind()) {
+                    (ty::Array(_, len), ty::Slice(_)) => {
+                        let len = len.sinto(s);
+                        UnsizingMetadata::Length(len)
+                    }
+                    (src_kind, ty::Dynamic(preds, ..)) => {
+                        let pred = preds[0].with_self_ty(tcx, src_ty);
+                        let clause = pred.as_trait_clause().expect(
+                            "the first `ExistentialPredicate` of `TyKind::Dynamic` \
                                         should be a trait clause",
-                                );
-                                let tref = clause.rebind(clause.skip_binder().trait_ref);
-                                let impl_expr = solve_trait(s, tref);
-                                UnsizingMetadata::VTablePtr(impl_expr)
+                        );
+                        let tref = clause.rebind(clause.skip_binder().trait_ref);
+                        let impl_expr = solve_trait(s, tref);
+
+                        if let ty::Dynamic(from_preds, _) = src_kind {
+                            let from_pred = from_preds[0].with_self_ty(tcx, src_ty);
+                            let from_clause = from_pred.as_trait_clause().expect(
+                                "the first `ExistentialPredicate` of `TyKind::Dynamic` \
+                                            should be a trait clause",
+                            );
+                            let from_tref = from_clause.rebind(from_clause.skip_binder().trait_ref);
+                            let from_impl_expr = solve_trait(s, from_tref);
+
+                            let target_principal = preds.principal();
+                            let reindexes = from_preds.principal() != target_principal
+                                && target_principal.is_some();
+                            UnsizingMetadata::NestedVTable {
+                                from_impl_expr,
+                                impl_expr,
+                                reindexes,
                             }
-                            _ => UnsizingMetadata::Unknown,
+                        } else {
+                            UnsizingMetadata::DirectVTable(impl_expr)
                         }
                     }
                     _ => UnsizingMetadata::Unknown,
