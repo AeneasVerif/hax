@@ -388,20 +388,8 @@ fn translate_terminator_kind_call<'tcx, S: UnderOwnerState<'tcx> + HasMir<'tcx>>
         let item = translate_item_ref(s, *def_id, *generics);
         FunOperand::Static(item)
     } else {
-        use mir::Operand;
-        match func {
-            Operand::Constant(_) => {
-                unimplemented!("{:?}", func);
-            }
-            Operand::Move(place) => {
-                // Function pointer or closure.
-                let place = place.sinto(s);
-                FunOperand::DynamicMove(place)
-            }
-            Operand::Copy(_place) => {
-                unimplemented!("{:?}", func);
-            }
-        }
+        let operand = func.sinto(s);
+        FunOperand::Dynamic(operand)
     };
 
     let late_bound_generics = sig
@@ -527,8 +515,8 @@ fn translate_switchint<'tcx, S: UnderOwnerState<'tcx> + HasMir<'tcx>>(
 pub enum FunOperand {
     /// Call to a statically-known function.
     Static(ItemRef),
-    /// Use of a closure or a function pointer value. Counts as a move from the given place.
-    DynamicMove(Place),
+    /// Use of a closure or a function pointer value.
+    Dynamic(Operand),
 }
 
 #[derive_group(Serializers)]
