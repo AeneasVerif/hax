@@ -1120,15 +1120,8 @@ pub enum TyKind {
     Str,
     RawPtr(Box<Ty>, Mutability),
     Ref(Region, Box<Ty>, Mutability),
-    #[custom_arm(FROM_TYPE::Dynamic(preds, region) => make_dyn(s, preds, region),)]
-    Dynamic(
-        /// Fresh type parameter that we use as the `Self` type in the prediates below.
-        ParamTy,
-        /// Clauses that define the trait object. These clauses use the fresh type parameter above
-        /// as `Self` type.
-        GenericPredicates,
-        Region,
-    ),
+    #[custom_arm(FROM_TYPE::Dynamic(preds, region) => TyKind::Dynamic(resolve_for_dyn(s, preds, |_| ()), region.sinto(s)),)]
+    Dynamic(DynBinder<()>, Region),
     #[custom_arm(FROM_TYPE::Coroutine(def_id, generics) => TO_TYPE::Coroutine(translate_item_ref(s, *def_id, generics)),)]
     Coroutine(ItemRef),
     Never,
@@ -1143,47 +1136,64 @@ pub enum TyKind {
     #[todo]
     Todo(String),
 }
-#[cfg(feature = "rustc")]
-fn searcher_for_traits<'tcx, S: UnderOwnerState<'tcx>>(
-    s: &S,
-    clauses: &Vec<ty::Clause<'tcx>>,
-) -> PredicateSearcher<'tcx> {
-    let tcx = s.base().tcx;
-    // Populate a predicate searcher that knows about the `dyn` clauses.
-    let mut predicate_searcher = s.with_predicate_searcher(|ps| ps.clone());
-    predicate_searcher
-        .insert_bound_predicates(clauses.iter().filter_map(|clause| clause.as_trait_clause()));
-    predicate_searcher.set_param_env(rustc_trait_selection::traits::normalize_param_env_or_error(
-        tcx,
-        ty::ParamEnv::new(
-            tcx.mk_clauses_from_iter(
-                s.param_env()
-                    .caller_bounds()
-                    .iter()
-                    .chain(clauses.iter().copied()),
-            ),
-        ),
-        rustc_trait_selection::traits::ObligationCause::dummy(),
-    ));
-    predicate_searcher
+
+/// A representation of `exists<T: Trait1 + Trait2>(value)`: we create a fresh type id and the
+/// appropriate trait clauses. The contained value may refer to the fresh ty and the in-scope trait
+/// clauses. This is used to represent types related to `dyn Trait`.
+#[derive_group(Serializers)]
+#[derive(Clone, Debug, JsonSchema, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DynBinder<T> {
+    /// Fresh type parameter that we use as the `Self` type in the prediates below.
+    pub existential_ty: ParamTy,
+    /// Clauses that define the trait object. These clauses use the fresh type parameter above
+    /// as `Self` type.
+    pub predicates: GenericPredicates,
+    /// The value inside the binder.
+    pub val: T,
 }
 
+/// Do trait resolution in the context of the clauses of a `dyn Trait` type.
 #[cfg(feature = "rustc")]
-fn fresh_param_ty<'tcx, S: UnderOwnerState<'tcx>>(s: &S) -> ty::ParamTy {
-    let tcx = s.base().tcx;
-    let def_id = s.owner_id();
-    let generics = tcx.generics_of(def_id);
-    let param_count = generics.parent_count + generics.own_params.len();
-    ty::ParamTy::new(param_count as u32 + 1, rustc_span::Symbol::intern("_dyn"))
-}
-
-/// Transform existential predicates into properly resolved predicates.
-#[cfg(feature = "rustc")]
-fn make_dyn<'tcx, S: UnderOwnerState<'tcx>>(
+fn resolve_for_dyn<'tcx, S: UnderOwnerState<'tcx>, R>(
     s: &S,
+    // The predicates in the context.
     epreds: &'tcx ty::List<ty::Binder<'tcx, ty::ExistentialPredicate<'tcx>>>,
-    region: &ty::Region<'tcx>,
-) -> TyKind {
+    f: impl FnOnce(&mut PredicateSearcher<'tcx>) -> R,
+) -> DynBinder<R> {
+    fn searcher_for_traits<'tcx, S: UnderOwnerState<'tcx>>(
+        s: &S,
+        clauses: &Vec<ty::Clause<'tcx>>,
+    ) -> PredicateSearcher<'tcx> {
+        let tcx = s.base().tcx;
+        // Populate a predicate searcher that knows about the `dyn` clauses.
+        let mut predicate_searcher = s.with_predicate_searcher(|ps| ps.clone());
+        predicate_searcher
+            .insert_bound_predicates(clauses.iter().filter_map(|clause| clause.as_trait_clause()));
+        predicate_searcher.set_param_env(
+            rustc_trait_selection::traits::normalize_param_env_or_error(
+                tcx,
+                ty::ParamEnv::new(
+                    tcx.mk_clauses_from_iter(
+                        s.param_env()
+                            .caller_bounds()
+                            .iter()
+                            .chain(clauses.iter().copied()),
+                    ),
+                ),
+                rustc_trait_selection::traits::ObligationCause::dummy(),
+            ),
+        );
+        predicate_searcher
+    }
+
+    fn fresh_param_ty<'tcx, S: UnderOwnerState<'tcx>>(s: &S) -> ty::ParamTy {
+        let tcx = s.base().tcx;
+        let def_id = s.owner_id();
+        let generics = tcx.generics_of(def_id);
+        let param_count = generics.parent_count + generics.own_params.len();
+        ty::ParamTy::new(param_count as u32 + 1, rustc_span::Symbol::intern("_dyn"))
+    }
+
     let tcx = s.base().tcx;
     let span = rustc_span::DUMMY_SP.sinto(s);
 
@@ -1199,6 +1209,7 @@ fn make_dyn<'tcx, S: UnderOwnerState<'tcx>>(
 
     // Populate a predicate searcher that knows about the `dyn` clauses.
     let mut predicate_searcher = searcher_for_traits(s, &clauses);
+    let val = f(&mut predicate_searcher);
 
     // Using the predicate searcher, translate the predicates. Only the projection predicates need
     // to be handled specially.
@@ -1245,9 +1256,11 @@ fn make_dyn<'tcx, S: UnderOwnerState<'tcx>>(
         .collect();
 
     let predicates = GenericPredicates { predicates };
-    let param_ty = new_param_ty.sinto(s);
-    let region = region.sinto(s);
-    TyKind::Dynamic(param_ty, predicates, region)
+    DynBinder {
+        existential_ty: new_param_ty.sinto(s),
+        predicates,
+        val,
+    }
 }
 
 /// Reflects [`ty::CanonicalUserTypeAnnotation`]
@@ -1350,7 +1363,7 @@ pub enum UnsizingMetadata {
     /// Unsize a non-dyn type to a dyn type, adding a vtable pointer as metadata.
     DirectVTable(ImplExpr),
     /// Unsize a dyn-type to another dyn-type, (optionally) indexing within the current vtable.
-    NestedVTable(ImplExpr),
+    NestedVTable(DynBinder<ImplExpr>),
     /// Couldn't compute
     Unknown,
 }
@@ -1396,20 +1409,10 @@ impl PointerCoercion {
                         UnsizingMetadata::Length(len)
                     }
                     (ty::Dynamic(from_preds, _), ty::Dynamic(to_preds, ..)) => {
-                        let src_ty = fresh_param_ty(s).to_ty(tcx);
-                        let to_pred = to_preds[0].with_self_ty(tcx, src_ty);
-                        let from_preds: Vec<ty::Clause<'tcx>> = from_preds
-                            .iter()
-                            .map(|p| p.clone().with_self_ty(tcx, src_ty))
-                            .collect::<Vec<_>>();
-                        let mut searcher = searcher_for_traits(s, &from_preds);
-                        let impl_expr = searcher
-                            .resolve(
-                                &to_pred.as_trait_clause().unwrap().to_poly_trait_ref(),
-                                &|_| {},
-                            )
-                            .s_unwrap(s)
-                            .sinto(s);
+                        let to_pred = to_preds.principal().unwrap().with_self_ty(tcx, src_ty);
+                        let impl_expr = resolve_for_dyn(s, from_preds, |searcher| {
+                            searcher.resolve(&to_pred, &|_| {}).s_unwrap(s).sinto(s)
+                        });
                         UnsizingMetadata::NestedVTable(impl_expr)
                     }
                     (_, ty::Dynamic(preds, ..)) => {
