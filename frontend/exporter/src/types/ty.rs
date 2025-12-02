@@ -1120,7 +1120,7 @@ pub enum TyKind {
     Str,
     RawPtr(Box<Ty>, Mutability),
     Ref(Region, Box<Ty>, Mutability),
-    #[custom_arm(FROM_TYPE::Dynamic(preds, region) => TyKind::Dynamic(resolve_for_dyn(s, preds, |_| ()), region.sinto(s)),)]
+    #[custom_arm(FROM_TYPE::Dynamic(preds, region) => TyKind::Dynamic(resolve_for_dyn(s, preds, |_, _| ()), region.sinto(s)),)]
     Dynamic(DynBinder<()>, Region),
     #[custom_arm(FROM_TYPE::Coroutine(def_id, generics) => TO_TYPE::Coroutine(translate_item_ref(s, *def_id, generics)),)]
     Coroutine(ItemRef),
@@ -1158,7 +1158,7 @@ fn resolve_for_dyn<'tcx, S: UnderOwnerState<'tcx>, R>(
     s: &S,
     // The predicates in the context.
     epreds: &'tcx ty::List<ty::Binder<'tcx, ty::ExistentialPredicate<'tcx>>>,
-    f: impl FnOnce(&mut PredicateSearcher<'tcx>) -> R,
+    f: impl FnOnce(&mut PredicateSearcher<'tcx>, ty::Ty<'tcx>) -> R,
 ) -> DynBinder<R> {
     fn searcher_for_traits<'tcx, S: UnderOwnerState<'tcx>>(
         s: &S,
@@ -1209,7 +1209,7 @@ fn resolve_for_dyn<'tcx, S: UnderOwnerState<'tcx>, R>(
 
     // Populate a predicate searcher that knows about the `dyn` clauses.
     let mut predicate_searcher = searcher_for_traits(s, &clauses);
-    let val = f(&mut predicate_searcher);
+    let val = f(&mut predicate_searcher, new_ty);
 
     // Using the predicate searcher, translate the predicates. Only the projection predicates need
     // to be handled specially.
@@ -1409,8 +1409,8 @@ impl PointerCoercion {
                         UnsizingMetadata::Length(len)
                     }
                     (ty::Dynamic(from_preds, _), ty::Dynamic(to_preds, ..)) => {
-                        let to_pred = to_preds.principal().unwrap().with_self_ty(tcx, src_ty);
-                        let impl_expr = resolve_for_dyn(s, from_preds, |searcher| {
+                        let impl_expr = resolve_for_dyn(s, from_preds, |searcher, fresh_ty| {
+                            let to_pred = to_preds.principal().unwrap().with_self_ty(tcx, fresh_ty);
                             searcher.resolve(&to_pred, &|_| {}).s_unwrap(s).sinto(s)
                         });
                         UnsizingMetadata::NestedVTable(impl_expr)
