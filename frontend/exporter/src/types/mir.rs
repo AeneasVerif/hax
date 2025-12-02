@@ -335,7 +335,7 @@ pub enum Operand {
 
 #[cfg(feature = "rustc")]
 impl Operand {
-    pub(crate) fn ty(&self) -> &Ty {
+    pub fn ty(&self) -> &Ty {
         match self {
             Operand::Copy(p) | Operand::Move(p) => &p.ty,
             Operand::Constant(c) => &c.ty,
