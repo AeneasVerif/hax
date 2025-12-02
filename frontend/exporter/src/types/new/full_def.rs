@@ -410,6 +410,15 @@ pub enum FullDefKind<Body> {
         drop_glue: Option<Body>,
         /// Info required to construct a virtual `Drop` impl for this closure.
         destruct_impl: Box<VirtualTraitImpl>,
+        /// The function signature when this closure is used as `FnMut` (or `Fn`) in a vtable.
+        /// `None` if this closure does not support `FnMut` or `Fn`.
+        /// `Some(sig)` if this closure implements `FnMut` (or `Fn`),
+        /// where `sig` is the trait method declaration's signature with `Self` 
+        /// replaced by `dyn Trait` and associated types normalized (same as vtable_sig in `AssocFn`).
+        fn_mut_vtable_sig: Option<PolyFnSig>,
+        fn_vtable_sig: Option<PolyFnSig>,
+        fn_mut_sig: Option<PolyFnSig>,
+        fn_sig: Option<PolyFnSig>,
     },
 
     // Constants
@@ -549,6 +558,43 @@ fn gen_vtable_sig<'tcx>(
 
     // Instantiate and normalize the signature.
     let method_decl_sig = tcx.fn_sig(method_decl_id).instantiate(tcx, trait_args);
+    let normalized_sig = normalize(tcx, s.typing_env(), method_decl_sig);
+
+    Some(normalized_sig.sinto(s))
+}
+
+#[cfg(feature = "rustc")]
+fn gen_closure_sig<'tcx>(
+    // The state that owns the method DefId
+    s: &impl UnderOwnerState<'tcx>,
+    // The `Fn` or `FnMut` trait reference of the closure
+    fn_or_fn_mut_ref: Option<ty::TraitRef<'tcx>>,
+    // whether construct a vtable_sig or a real_sig
+    is_vtable: bool,
+) -> Option<PolyFnSig> {
+    let fn_or_fn_mut_ref = fn_or_fn_mut_ref?;
+    let tcx = s.base().tcx;
+
+    // Get AssocItems of `Fn` or `FnMut`
+    let assoc_item = tcx.associated_items(fn_or_fn_mut_ref.def_id);
+    // Pick `call` or `call_mut`
+    let call_method = assoc_item.in_definition_order().
+        next().map(|elem| elem).unwrap();
+    // Get its signature
+    let fn_decl_sig = tcx.fn_sig(call_method.def_id);
+    let trait_args = if is_vtable {
+        // Generate type of shim receiver
+        let dyn_self = dyn_self_ty(tcx, s.typing_env(), fn_or_fn_mut_ref).unwrap();
+        // Construct signature with dyn_self
+        let mut full_args = vec![ty::GenericArg::from(dyn_self)];
+        full_args.extend(fn_or_fn_mut_ref.args[1..].iter());
+        tcx.mk_args(&full_args)
+    } else {
+        fn_or_fn_mut_ref.args
+    };
+
+    // Instantiate and normalize the signature.
+    let method_decl_sig = fn_decl_sig.instantiate(tcx, trait_args);
     let normalized_sig = normalize(tcx, s.typing_env(), method_decl_sig);
 
     Some(normalized_sig.sinto(s))
@@ -822,6 +868,14 @@ where
             let fn_mut_trait = tcx.lang_items().fn_mut_trait().unwrap();
             let fn_trait = tcx.lang_items().fn_trait().unwrap();
             let destruct_trait = tcx.lang_items().destruct_trait().unwrap();
+
+            let fn_mut_ref = matches!(closure.kind(), FnMut | Fn)
+                .then(|| ty::TraitRef::new(tcx, fn_mut_trait, trait_args));
+
+            let fn_ref = matches!(closure.kind(), Fn)
+                .then(|| ty::TraitRef::new(tcx, fn_trait, trait_args));
+
+
             FullDefKind::Closure {
                 param_env: get_param_env(s, args),
                 is_const: tcx.constness(def_id) == rustc_hir::Constness::Const,
@@ -840,6 +894,10 @@ where
                     .then(|| virtual_impl_for(s, ty::TraitRef::new(tcx, fn_mut_trait, trait_args))),
                 fn_impl: matches!(closure.kind(), Fn)
                     .then(|| virtual_impl_for(s, ty::TraitRef::new(tcx, fn_trait, trait_args))),
+                fn_mut_vtable_sig: gen_closure_sig(s, fn_mut_ref, true),
+                fn_vtable_sig: gen_closure_sig(s, fn_ref, true),
+                fn_mut_sig: gen_closure_sig(s, fn_mut_ref, false),
+                fn_sig: gen_closure_sig(s, fn_ref, false),
             }
         }
         kind @ (RDefKind::Const { .. }
