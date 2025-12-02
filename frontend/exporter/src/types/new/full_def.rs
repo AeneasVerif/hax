@@ -417,6 +417,8 @@ pub enum FullDefKind<Body> {
         /// replaced by `dyn Trait` and associated types normalized (same as vtable_sig in `AssocFn`).
         fn_mut_vtable_sig: Option<PolyFnSig>,
         fn_vtable_sig: Option<PolyFnSig>,
+        fn_mut_sig: Option<PolyFnSig>,
+        fn_sig: Option<PolyFnSig>,
     },
 
     // Constants
@@ -562,12 +564,13 @@ fn gen_vtable_sig<'tcx>(
 }
 
 #[cfg(feature = "rustc")]
-fn gen_closure_vtable_sig<'tcx>(
+fn gen_closure_sig<'tcx>(
     // The state that owns the method DefId
     s: &impl UnderOwnerState<'tcx>,
-    // args: Option<ty::GenericArgsRef<'tcx>>,
     // The `Fn` or `FnMut` trait reference of the closure
     fn_or_fn_mut_ref: Option<ty::TraitRef<'tcx>>,
+    // whether construct a vtable_sig or a real_sig
+    is_vtable: bool,
 ) -> Option<PolyFnSig> {
     let fn_or_fn_mut_ref = fn_or_fn_mut_ref?;
     let tcx = s.base().tcx;
@@ -579,12 +582,16 @@ fn gen_closure_vtable_sig<'tcx>(
         next().map(|elem| elem).unwrap();
     // Get its signature
     let fn_decl_sig = tcx.fn_sig(call_method.def_id);
-    // Generate type of shim receiver
-    let dyn_self = dyn_self_ty(tcx, s.typing_env(), fn_or_fn_mut_ref).unwrap();
-    // Construct signature with dyn_self
-    let mut full_args = vec![ty::GenericArg::from(dyn_self)];
-    full_args.extend(fn_or_fn_mut_ref.args[1..].iter());
-    let trait_args = tcx.mk_args(&full_args);
+    let trait_args = if is_vtable {
+        // Generate type of shim receiver
+        let dyn_self = dyn_self_ty(tcx, s.typing_env(), fn_or_fn_mut_ref).unwrap();
+        // Construct signature with dyn_self
+        let mut full_args = vec![ty::GenericArg::from(dyn_self)];
+        full_args.extend(fn_or_fn_mut_ref.args[1..].iter());
+        tcx.mk_args(&full_args)
+    } else {
+        fn_or_fn_mut_ref.args
+    };
 
     // Instantiate and normalize the signature.
     let method_decl_sig = fn_decl_sig.instantiate(tcx, trait_args);
@@ -887,8 +894,10 @@ where
                     .then(|| virtual_impl_for(s, ty::TraitRef::new(tcx, fn_mut_trait, trait_args))),
                 fn_impl: matches!(closure.kind(), Fn)
                     .then(|| virtual_impl_for(s, ty::TraitRef::new(tcx, fn_trait, trait_args))),
-                fn_mut_vtable_sig: gen_closure_vtable_sig(s, fn_mut_ref),
-                fn_vtable_sig: gen_closure_vtable_sig(s, fn_ref),
+                fn_mut_vtable_sig: gen_closure_sig(s, fn_mut_ref, true),
+                fn_vtable_sig: gen_closure_sig(s, fn_ref, true),
+                fn_mut_sig: gen_closure_sig(s, fn_mut_ref, false),
+                fn_sig: gen_closure_sig(s, fn_ref, false),
             }
         }
         kind @ (RDefKind::Const { .. }
