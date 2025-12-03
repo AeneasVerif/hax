@@ -397,6 +397,7 @@ pub enum FullDefKind<Body> {
         param_env: ParamEnv,
         args: ClosureArgs,
         is_const: bool,
+        inline: InlineAttr,
         /// Info required to construct a virtual `FnOnce` impl for this closure.
         fn_once_impl: Box<VirtualTraitImpl>,
         /// Info required to construct a virtual `FnMut` impl for this closure.
@@ -881,6 +882,7 @@ where
             FullDefKind::Closure {
                 param_env: get_param_env(s, args),
                 is_const: tcx.constness(def_id) == rustc_hir::Constness::Const,
+                inline: tcx.codegen_fn_attrs(def_id).inline.sinto(s),
                 args: ClosureArgs::sfrom(s, def_id, closure),
                 once_shim: get_closure_once_shim(s, closure_ty),
                 drop_glue: get_drop_glue_shim(s, args, false),
