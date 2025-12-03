@@ -413,7 +413,7 @@ pub enum FullDefKind<Body> {
         /// The function signature when this closure is used as `FnMut` (or `Fn`) in a vtable.
         /// `None` if this closure does not support `FnMut` or `Fn`.
         /// `Some(sig)` if this closure implements `FnMut` (or `Fn`),
-        /// where `sig` is the trait method declaration's signature with `Self` 
+        /// where `sig` is the trait method declaration's signature with `Self`
         /// replaced by `dyn Trait` and associated types normalized (same as vtable_sig in `AssocFn`).
         fn_mut_vtable_sig: Option<PolyFnSig>,
         fn_vtable_sig: Option<PolyFnSig>,
@@ -578,8 +578,11 @@ fn gen_closure_sig<'tcx>(
     // Get AssocItems of `Fn` or `FnMut`
     let assoc_item = tcx.associated_items(fn_or_fn_mut_ref.def_id);
     // Pick `call` or `call_mut`
-    let call_method = assoc_item.in_definition_order().
-        next().map(|elem| elem).unwrap();
+    let call_method = assoc_item
+        .in_definition_order()
+        .next()
+        .map(|elem| elem)
+        .unwrap();
     // Get its signature
     let fn_decl_sig = tcx.fn_sig(call_method.def_id);
     let trait_args = if is_vtable {
@@ -872,9 +875,8 @@ where
             let fn_mut_ref = matches!(closure.kind(), FnMut | Fn)
                 .then(|| ty::TraitRef::new(tcx, fn_mut_trait, trait_args));
 
-            let fn_ref = matches!(closure.kind(), Fn)
-                .then(|| ty::TraitRef::new(tcx, fn_trait, trait_args));
-
+            let fn_ref =
+                matches!(closure.kind(), Fn).then(|| ty::TraitRef::new(tcx, fn_trait, trait_args));
 
             FullDefKind::Closure {
                 param_env: get_param_env(s, args),
