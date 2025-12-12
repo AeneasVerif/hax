@@ -1,6 +1,8 @@
 use crate::prelude::*;
 
 #[cfg(feature = "rustc")]
+use itertools::Itertools;
+#[cfg(feature = "rustc")]
 use rustc_hir::def::DefKind as RDefKind;
 #[cfg(feature = "rustc")]
 use rustc_middle::mir;
@@ -411,15 +413,18 @@ pub enum FullDefKind<Body> {
         drop_glue: Option<Body>,
         /// Info required to construct a virtual `Drop` impl for this closure.
         destruct_impl: Box<VirtualTraitImpl>,
-        /// The function signature when this closure is used as `FnMut` (or `Fn`) in a vtable.
-        /// `None` if this closure does not support `FnMut` or `Fn`.
-        /// `Some(sig)` if this closure implements `FnMut` (or `Fn`),
-        /// where `sig` is the trait method declaration's signature with `Self`
-        /// replaced by `dyn Trait` and associated types normalized (same as vtable_sig in `AssocFn`).
-        fn_mut_vtable_sig: Option<PolyFnSig>,
-        fn_vtable_sig: Option<PolyFnSig>,
-        fn_mut_sig: Option<PolyFnSig>,
-        fn_sig: Option<PolyFnSig>,
+        /// The signature of the `call_once` method.
+        call_once_sig: PolyFnSig,
+        /// The signature of the `call_mut` method, if applicable.
+        call_mut_sig: Option<PolyFnSig>,
+        /// The signature of the `call` method, if applicable.
+        call_sig: Option<PolyFnSig>,
+        /// The signature of the `call_mut` method, if applicable, with `Self` replaced by `dyn
+        /// Trait` (like vtable_sig in `AssocFn`).
+        call_mut_vtable_sig: Option<PolyFnSig>,
+        /// The signature of the `call` method, if applicable, with `Self` replaced by `dyn
+        /// Trait` (like vtable_sig in `AssocFn`).
+        call_vtable_sig: Option<PolyFnSig>,
     },
 
     // Constants
@@ -568,40 +573,41 @@ fn gen_vtable_sig<'tcx>(
 fn gen_closure_sig<'tcx>(
     // The state that owns the method DefId
     s: &impl UnderOwnerState<'tcx>,
-    // The `Fn` or `FnMut` trait reference of the closure
-    fn_or_fn_mut_ref: Option<ty::TraitRef<'tcx>>,
-    // whether construct a vtable_sig or a real_sig
-    is_vtable: bool,
+    // The `Fn`/`FnMut`/`FnOnce` trait reference of the closure
+    tref: Option<ty::TraitRef<'tcx>>,
+    // Whether to replace the `Self` type of the trait with `dyn TheTrait`
+    dyn_self: bool,
 ) -> Option<PolyFnSig> {
-    let fn_or_fn_mut_ref = fn_or_fn_mut_ref?;
+    let tref = tref?;
     let tcx = s.base().tcx;
 
     // Get AssocItems of `Fn` or `FnMut`
-    let assoc_item = tcx.associated_items(fn_or_fn_mut_ref.def_id);
-    // Pick `call` or `call_mut`
+    let assoc_item = tcx.associated_items(tref.def_id);
+    // Pick `call`/`call_mut`/`call_once`.
     let call_method = assoc_item
         .in_definition_order()
-        .next()
-        .map(|elem| elem)
+        .filter(|item| matches!(item.kind, ty::AssocKind::Fn { .. }))
+        .exactly_one()
+        .ok()
         .unwrap();
     // Get its signature
-    let fn_decl_sig = tcx.fn_sig(call_method.def_id);
-    let trait_args = if is_vtable {
+    let sig = tcx.fn_sig(call_method.def_id);
+    let trait_args = if dyn_self {
         // Generate type of shim receiver
-        let dyn_self = dyn_self_ty(tcx, s.typing_env(), fn_or_fn_mut_ref).unwrap();
+        let dyn_self = dyn_self_ty(tcx, s.typing_env(), tref).unwrap();
         // Construct signature with dyn_self
         let mut full_args = vec![ty::GenericArg::from(dyn_self)];
-        full_args.extend(fn_or_fn_mut_ref.args[1..].iter());
+        full_args.extend(tref.args[1..].iter());
         tcx.mk_args(&full_args)
     } else {
-        fn_or_fn_mut_ref.args
+        tref.args
     };
 
     // Instantiate and normalize the signature.
-    let method_decl_sig = fn_decl_sig.instantiate(tcx, trait_args);
-    let normalized_sig = normalize(tcx, s.typing_env(), method_decl_sig);
+    let sig = sig.instantiate(tcx, trait_args);
+    let sig = normalize(tcx, s.typing_env(), sig);
 
-    Some(normalized_sig.sinto(s))
+    Some(sig.sinto(s))
 }
 
 #[cfg(feature = "rustc")]
@@ -873,10 +879,10 @@ where
             let fn_trait = tcx.lang_items().fn_trait().unwrap();
             let destruct_trait = tcx.lang_items().destruct_trait().unwrap();
 
-            let fn_mut_ref = matches!(closure.kind(), FnMut | Fn)
+            let fn_once_tref = ty::TraitRef::new(tcx, fn_once_trait, trait_args);
+            let fn_mut_tref = matches!(closure.kind(), FnMut | Fn)
                 .then(|| ty::TraitRef::new(tcx, fn_mut_trait, trait_args));
-
-            let fn_ref =
+            let fn_tref =
                 matches!(closure.kind(), Fn).then(|| ty::TraitRef::new(tcx, fn_trait, trait_args));
 
             FullDefKind::Closure {
@@ -890,18 +896,14 @@ where
                     s,
                     ty::TraitRef::new(tcx, destruct_trait, [type_of_self()]),
                 ),
-                fn_once_impl: virtual_impl_for(
-                    s,
-                    ty::TraitRef::new(tcx, fn_once_trait, trait_args),
-                ),
-                fn_mut_impl: matches!(closure.kind(), FnMut | Fn)
-                    .then(|| virtual_impl_for(s, ty::TraitRef::new(tcx, fn_mut_trait, trait_args))),
-                fn_impl: matches!(closure.kind(), Fn)
-                    .then(|| virtual_impl_for(s, ty::TraitRef::new(tcx, fn_trait, trait_args))),
-                fn_mut_vtable_sig: gen_closure_sig(s, fn_mut_ref, true),
-                fn_vtable_sig: gen_closure_sig(s, fn_ref, true),
-                fn_mut_sig: gen_closure_sig(s, fn_mut_ref, false),
-                fn_sig: gen_closure_sig(s, fn_ref, false),
+                fn_once_impl: virtual_impl_for(s, fn_once_tref),
+                fn_mut_impl: fn_mut_tref.map(|tref| virtual_impl_for(s, tref)),
+                fn_impl: fn_tref.map(|tref| virtual_impl_for(s, tref)),
+                call_mut_vtable_sig: gen_closure_sig(s, fn_mut_tref, true),
+                call_vtable_sig: gen_closure_sig(s, fn_tref, true),
+                call_once_sig: gen_closure_sig(s, Some(fn_once_tref), false).unwrap(),
+                call_mut_sig: gen_closure_sig(s, fn_mut_tref, false),
+                call_sig: gen_closure_sig(s, fn_tref, false),
             }
         }
         kind @ (RDefKind::Const { .. }
