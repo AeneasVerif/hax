@@ -1898,19 +1898,10 @@ impl AssocItem {
                 impl_id: container_id.sinto(s),
             },
         };
-        let kind = match &item.kind {
-            ty::AssocKind::Const { .. } => AssocKind::Const,
-            ty::AssocKind::Type { .. } => AssocKind::Type,
-            ty::AssocKind::Fn { .. } => {
-                let typing_env = s.typing_env();
-                let sig = inst_binder(tcx, typing_env, Some(item_args), tcx.fn_sig(item.def_id));
-                AssocKind::Fn { sig: sig.sinto(s) }
-            }
-        };
         AssocItem {
             def_id: item.def_id.sinto(s),
             name: item.opt_name().sinto(s),
-            kind,
+            kind: item.kind.sinto(s),
             container,
             has_value: item.defaultness(tcx).has_value(),
         }
@@ -1918,28 +1909,25 @@ impl AssocItem {
 }
 
 /// Reflects [`ty::AssocKind`]
-// #[derive(AdtInto)]
-// #[args(<'tcx, S: BaseState<'tcx>>, from: ty::AssocKind, state: S as _tcx)]
+#[derive(AdtInto)]
+#[args(<'tcx, S: BaseState<'tcx>>, from: ty::AssocKind, state: S as _tcx)]
 #[derive_group(Serializers)]
 #[derive(Clone, Debug, JsonSchema, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AssocKind {
-    Const,
-    Fn { sig: PolyFnSig },
-    Type,
-    // Const { name: Symbol },
-    // Fn { name: Symbol, has_self: bool },
-    // Type { data: AssocTypeData },
+    Const { name: Symbol },
+    Fn { name: Symbol, has_self: bool },
+    Type { data: AssocTypeData },
 }
 
-// /// Reflects [`ty::AssocTypeData`]
-// #[derive(AdtInto)]
-// #[args(<'tcx, S: BaseState<'tcx>>, from: ty::AssocTypeData, state: S as _tcx)]
-// #[derive_group(Serializers)]
-// #[derive(Clone, Debug, JsonSchema, Hash, PartialEq, Eq, PartialOrd, Ord)]
-// pub enum AssocTypeData {
-//     Normal(Symbol),
-//     Rpitit(ImplTraitInTraitData),
-// }
+/// Reflects [`ty::AssocTypeData`]
+#[derive(AdtInto)]
+#[args(<'tcx, S: BaseState<'tcx>>, from: ty::AssocTypeData, state: S as _tcx)]
+#[derive_group(Serializers)]
+#[derive(Clone, Debug, JsonSchema, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AssocTypeData {
+    Normal(Symbol),
+    Rpitit(ImplTraitInTraitData),
+}
 
 #[derive_group(Serializers)]
 #[derive(Clone, Debug, JsonSchema, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -1963,17 +1951,17 @@ pub enum AssocItemContainer {
     },
 }
 
-// /// Reflects [`ty::ImplTraitInTraitData`]
-// #[derive(AdtInto)]
-// #[args(<'tcx, S: BaseState<'tcx>>, from: ty::ImplTraitInTraitData, state: S as _s)]
-// #[derive_group(Serializers)]
-// #[derive(Clone, Debug, JsonSchema, Hash, PartialEq, Eq, PartialOrd, Ord)]
-// pub enum ImplTraitInTraitData {
-//     Trait {
-//         fn_def_id: DefId,
-//         opaque_def_id: DefId,
-//     },
-//     Impl {
-//         fn_def_id: DefId,
-//     },
-// }
+/// Reflects [`ty::ImplTraitInTraitData`]
+#[derive(AdtInto)]
+#[args(<'tcx, S: BaseState<'tcx>>, from: ty::ImplTraitInTraitData, state: S as _s)]
+#[derive_group(Serializers)]
+#[derive(Clone, Debug, JsonSchema, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ImplTraitInTraitData {
+    Trait {
+        fn_def_id: DefId,
+        opaque_def_id: DefId,
+    },
+    Impl {
+        fn_def_id: DefId,
+    },
+}
