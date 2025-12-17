@@ -13,7 +13,7 @@ where
 {
     match args {
         None => x.instantiate_identity(),
-        Some(args) => tcx.normalize_erasing_regions(typing_env, x.instantiate(tcx, args)),
+        Some(args) => normalize(tcx, typing_env, x.instantiate(tcx, args)),
     }
 }
 
